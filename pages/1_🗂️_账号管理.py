@@ -109,7 +109,7 @@ with col2:
 with col3:
     filter_status = st.selectbox(
         "账号状态",
-        ["全部", "未使用", "已使用", "已过期", "已停机"],
+        ["全部", "未使用", "已使用", "已过期", "已过期但被绑定", "已停机"],
         key="filter_status"
     )
 
@@ -156,6 +156,7 @@ try:
                 '状态': account['状态'],
                 '账号类型': account['账号类型'],
                 '绑定学号': account['绑定的学号'] or '',
+                '用户姓名': account.get('用户姓名') or '',
                 '生命周期结束日期': account['生命周期结束日期'] or '',
                 '套餐到期日': account['绑定的套餐到期日'] or '',
                 '更新时间': account['更新时间']
@@ -169,7 +170,7 @@ try:
         # 批量操作
         render_section_divider("⚙️ 批量操作")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
             if st.button("🔄 释放过期绑定", use_container_width=True):
@@ -186,6 +187,30 @@ try:
                     st.rerun()
 
         with col3:
+            if st.button("🔁 一键换绑", use_container_width=True, type="primary"):
+                with st.spinner("正在执行一键换绑..."):
+                    rebind_result = account_manager.batch_rebind_expired_accounts()
+
+                    if rebind_result['success']:
+                        show_success_message(rebind_result['message'])
+
+                        # 显示换绑详情
+                        if rebind_result.get('rebind_details'):
+                            with st.expander("📋 查看换绑详情"):
+                                rebind_df = pd.DataFrame(rebind_result['rebind_details'])
+                                st.dataframe(rebind_df, use_container_width=True)
+
+                        # 显示失败信息
+                        if rebind_result.get('details'):
+                            with st.expander("⚠️ 查看失败详情"):
+                                for detail in rebind_result['details']:
+                                    st.warning(detail)
+
+                        st.rerun()
+                    else:
+                        show_error_message(rebind_result['message'])
+
+        with col4:
             # 导出当前搜索结果
             if st.button("📤 导出搜索结果", use_container_width=True):
                 try:

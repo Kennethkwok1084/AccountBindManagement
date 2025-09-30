@@ -61,8 +61,15 @@ class ISPAccountOperations:
 
     @staticmethod
     def get_account(账号: str) -> Optional[Dict[str, Any]]:
-        """获取单个账号信息"""
-        query = 'SELECT * FROM isp_accounts WHERE 账号 = ?'
+        """获取单个账号信息（关联用户姓名）"""
+        query = '''
+            SELECT
+                isp_accounts.*,
+                user_list.用户姓名
+            FROM isp_accounts
+            LEFT JOIN user_list ON isp_accounts.绑定的学号 = user_list.用户账号
+            WHERE isp_accounts.账号 = ?
+        '''
         results = db_manager.execute_query(query, (账号,))
         return results[0] if results else None
 
@@ -85,22 +92,30 @@ class ISPAccountOperations:
     def search_accounts(状态: Optional[str] = None,
                        账号类型: Optional[str] = None,
                        绑定的学号: Optional[str] = None) -> List[Dict[str, Any]]:
-        """搜索账号"""
+        """搜索账号（关联用户姓名）"""
         conditions = []
         params = []
 
         if 状态:
-            conditions.append('状态 = ?')
+            conditions.append('isp_accounts.状态 = ?')
             params.append(状态)
         if 账号类型:
-            conditions.append('账号类型 = ?')
+            conditions.append('isp_accounts.账号类型 = ?')
             params.append(账号类型)
         if 绑定的学号:
-            conditions.append('绑定的学号 = ?')
+            conditions.append('isp_accounts.绑定的学号 = ?')
             params.append(绑定的学号)
 
         where_clause = ' AND '.join(conditions) if conditions else '1=1'
-        query = f'SELECT * FROM isp_accounts WHERE {where_clause} ORDER BY 更新时间 DESC'
+        query = f'''
+            SELECT
+                isp_accounts.*,
+                user_list.用户姓名
+            FROM isp_accounts
+            LEFT JOIN user_list ON isp_accounts.绑定的学号 = user_list.用户账号
+            WHERE {where_clause}
+            ORDER BY isp_accounts.更新时间 DESC
+        '''
 
         return db_manager.execute_query(query, tuple(params))
 
@@ -227,14 +242,29 @@ class MaintenanceOperations:
 
     @staticmethod
     def auto_expire_lifecycle_ended() -> int:
-        """自动将生命周期结束的账号标记为已过期"""
-        query = '''
+        """自动将生命周期结束的账号标记为已过期（区分是否仍被绑定）"""
+        # 情况1：生命周期过期且套餐也过期（或没有绑定）-> 标记为「已过期」
+        query_expired = '''
             UPDATE isp_accounts
             SET 状态 = '已过期', 更新时间 = CURRENT_TIMESTAMP
             WHERE 生命周期结束日期 < date('now')
-            AND 状态 != '已过期'
+            AND 状态 NOT IN ('已过期', '已过期但被绑定')
+            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now'))
         '''
-        return db_manager.execute_update(query)
+        count1 = db_manager.execute_update(query_expired)
+
+        # 情况2：生命周期过期但套餐还没过期 -> 标记为「已过期但被绑定」
+        query_expired_but_bound = '''
+            UPDATE isp_accounts
+            SET 状态 = '已过期但被绑定', 更新时间 = CURRENT_TIMESTAMP
+            WHERE 生命周期结束日期 < date('now')
+            AND 状态 NOT IN ('已过期', '已过期但被绑定')
+            AND 绑定的套餐到期日 IS NOT NULL
+            AND 绑定的套餐到期日 >= date('now')
+        '''
+        count2 = db_manager.execute_update(query_expired_but_bound)
+
+        return count1 + count2
 
     @staticmethod
     def auto_mark_expired_subscriptions() -> int:
@@ -250,17 +280,29 @@ class MaintenanceOperations:
         return db_manager.execute_update(query)
 
     @staticmethod
-    def run_daily_maintenance() -> Tuple[int, int, int]:
+    def auto_convert_expired_but_bound_to_expired() -> int:
+        """自动将「已过期但被绑定」且套餐也过期的账号转换为「已过期」"""
+        query = '''
+            UPDATE isp_accounts
+            SET 状态 = '已过期', 更新时间 = CURRENT_TIMESTAMP
+            WHERE 状态 = '已过期但被绑定'
+            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now'))
+        '''
+        return db_manager.execute_update(query)
+
+    @staticmethod
+    def run_daily_maintenance() -> Tuple[int, int, int, int]:
         """执行每日维护任务"""
         released_count = MaintenanceOperations.auto_release_expired_bindings()
         expired_count = MaintenanceOperations.auto_expire_lifecycle_ended()
         subscription_expired_count = MaintenanceOperations.auto_mark_expired_subscriptions()
+        converted_count = MaintenanceOperations.auto_convert_expired_but_bound_to_expired()
 
         # 更新维护时间
         SystemSettingsOperations.set_setting('上次自动维护执行时间',
                                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
-        return released_count, expired_count, subscription_expired_count
+        return released_count, expired_count, subscription_expired_count, converted_count
 
 
 if __name__ == "__main__":

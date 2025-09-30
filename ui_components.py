@@ -236,6 +236,7 @@ def render_status_badge(status: str) -> str:
         '未使用': COLORS['success'],
         '已使用': COLORS['warning'],
         '已过期': COLORS['danger'],
+        '已过期但被绑定': '#FF6F00',  # 深橙色 - 需要注意的状态
         '待处理': COLORS['info'],
         '已处理': COLORS['success'],
         '处理失败': COLORS['danger'],
@@ -286,25 +287,30 @@ def render_dataframe_with_style(df: pd.DataFrame, status_column: Optional[str] =
         resizable=True,
         editable=False,
         wrapText=False,
-        autoHeight=False
+        autoHeight=False,
+        enableCellTextSelection=True,  # 启用单元格文本选择
+        ensureDomOrder=True
     )
 
-    # 禁用选择功能（避免复杂交互导致错误）
-    gb.configure_selection(selection_mode='single', use_checkbox=False)
+    # 禁用行选择，但保留单元格选择功能
+    gb.configure_selection(selection_mode='single', use_checkbox=False, suppressRowClickSelection=False)
 
     # 配置侧边栏（高级筛选）
     gb.configure_side_bar()
 
-    # 配置网格选项
+    # 配置网格选项 - 启用范围选择和复制功能
     gb.configure_grid_options(
         domLayout='normal',
-        enableRangeSelection=False,
-        suppressRowClickSelection=True
+        enableRangeSelection=True,  # 启用范围选择
+        enableRangeHandle=True,     # 启用范围拖动
+        enableCellTextSelection=True,  # 启用单元格文本选择
+        suppressRowClickSelection=True,  # 禁止点击行时选择整行
+        suppressCellSelection=False   # 允许单元格选择
     )
 
     gridOptions = gb.build()
 
-    # 渲染 AgGrid（使用最简配置避免 React 错误）
+    # 渲染 AgGrid（启用复制功能）
     AgGrid(
         df,
         gridOptions=gridOptions,
