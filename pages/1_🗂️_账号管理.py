@@ -196,9 +196,33 @@ try:
 
                         # 显示换绑详情
                         if rebind_result.get('rebind_details'):
-                            with st.expander("📋 查看换绑详情"):
+                            with st.expander("📋 查看换绑详情", expanded=True):
                                 rebind_df = pd.DataFrame(rebind_result['rebind_details'])
                                 st.dataframe(rebind_df, use_container_width=True)
+
+                                # 导出换绑详情
+                                st.markdown("---")
+                                col_export1, col_export2, col_export3 = st.columns([1, 1, 1])
+                                with col_export2:
+                                    try:
+                                        export_path = export_processor.save_to_excel(
+                                            rebind_result['rebind_details'],
+                                            f"换绑详情_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                            "换绑详情"
+                                        )
+
+                                        if os.path.exists(export_path):
+                                            with open(export_path, 'rb') as file:
+                                                st.download_button(
+                                                    label="📥 导出换绑详情Excel",
+                                                    data=file.read(),
+                                                    file_name=os.path.basename(export_path),
+                                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                                    use_container_width=True,
+                                                    key="download_rebind_details"
+                                                )
+                                    except Exception as e:
+                                        show_error_message(f"导出失败: {e}")
 
                         # 显示失败信息
                         if rebind_result.get('details'):
