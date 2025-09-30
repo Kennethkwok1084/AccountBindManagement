@@ -1,0 +1,15 @@
+[Unit]
+Description=Campus Network Account Management System
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/account_manager
+Environment="PATH=/opt/account_manager/venv/bin"
+ExecStart=/opt/account_manager/venv/bin/streamlit run app.py --server.port=38506 --server.address=0.0.0.0 --server.headless=true
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

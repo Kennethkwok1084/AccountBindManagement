@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  campus-account-manager:
+    build: .
+    container_name: campus-account-manager
+    ports:
+      - "38506:38506"
+    volumes:
+      # 持久化数据库
+      - ./data:/app/data
+      # 持久化导出文件
+      - ./exports:/app/exports
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:38506/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
