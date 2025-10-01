@@ -195,7 +195,8 @@ class PaymentExcelProcessor(ExcelProcessor):
     """缴费Excel处理器"""
 
     def __init__(self):
-        self.required_columns = ['用户账号', '收费时间', '收费金额']
+        self.required_columns = ['用户账号', '收费时间']
+        self.amount_column_candidates = ['收费金额', '收费金额（元）', '金额']
         self.optional_columns = ['移动账号']
 
     def process_payment_import(self, file_buffer, last_import_time: Optional[datetime] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -209,13 +210,23 @@ class PaymentExcelProcessor(ExcelProcessor):
             if missing_columns:
                 raise ValueError(f"缺少必需列: {', '.join(missing_columns)}")
 
+            # 智能识别收费金额列
+            amount_column = None
+            for candidate in self.amount_column_candidates:
+                if candidate in df.columns:
+                    amount_column = candidate
+                    break
+
+            if not amount_column:
+                raise ValueError(f"缺少收费金额列，支持的列名: {', '.join(self.amount_column_candidates)}")
+
             processed_payments = []
 
             for index, row in df.iterrows():
                 try:
                     缴费时间 = self._parse_datetime(row['收费时间'])
                     if not 缴费时间:
-                        errors.append(f"第{index+2}行: 收费时间格式错误")
+                        errors.append(f"第{index+2}行: 收费时间格式错误，原始值: {row['收费时间']}")
                         continue
 
                     # 增量过滤：只处理新于上次导入时间的记录
@@ -225,7 +236,7 @@ class PaymentExcelProcessor(ExcelProcessor):
                     payment_data = {
                         '学号': str(row['用户账号']).strip(),
                         '缴费时间': 缴费时间,
-                        '缴费金额': float(row['收费金额'])
+                        '缴费金额': float(row[amount_column])
                     }
 
                     # 数据验证
@@ -248,25 +259,33 @@ class PaymentExcelProcessor(ExcelProcessor):
             return [], [f"文件处理错误: {e}"]
 
     def _parse_datetime(self, datetime_value) -> Optional[datetime]:
-        """解析日期时间"""
+        """解析日期时间，支持多种格式包括带毫秒的格式"""
         if pd.isna(datetime_value):
             return None
 
         if isinstance(datetime_value, datetime):
             return datetime_value
 
-        # 尝试解析字符串日期时间
-        try:
-            return datetime.strptime(str(datetime_value), '%Y-%m-%d %H:%M:%S')
-        except:
+        # 转换为字符串并清理
+        datetime_str = str(datetime_value).strip()
+
+        # 尝试多种日期时间格式
+        formats = [
+            '%Y-%m-%d %H:%M:%S.%f',  # 2025-10-01 14:02:37.0
+            '%Y-%m-%d %H:%M:%S',     # 2025-10-01 14:02:37
+            '%Y/%m/%d %H:%M:%S.%f',  # 2025/10/01 14:02:37.0
+            '%Y/%m/%d %H:%M:%S',     # 2025/10/01 14:02:37
+            '%Y-%m-%d',              # 2025-10-01
+            '%Y/%m/%d',              # 2025/10/01
+        ]
+
+        for fmt in formats:
             try:
-                return datetime.strptime(str(datetime_value), '%Y/%m/%d %H:%M:%S')
+                return datetime.strptime(datetime_str, fmt)
             except:
-                try:
-                    # 如果只有日期，添加默认时间
-                    return datetime.strptime(str(datetime_value), '%Y-%m-%d')
-                except:
-                    return None
+                continue
+
+        return None
 
 
 class ExportExcelProcessor(ExcelProcessor):
