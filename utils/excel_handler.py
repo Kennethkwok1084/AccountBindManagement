@@ -263,8 +263,14 @@ class PaymentExcelProcessor(ExcelProcessor):
         if pd.isna(datetime_value):
             return None
 
+        # 如果是 pandas Timestamp 对象，直接转换为 datetime
+        if isinstance(datetime_value, pd.Timestamp):
+            # 去除时区信息（如果有），保持原始时间
+            return datetime_value.to_pydatetime().replace(tzinfo=None)
+
         if isinstance(datetime_value, datetime):
-            return datetime_value
+            # 去除时区信息（如果有），保持原始时间
+            return datetime_value.replace(tzinfo=None)
 
         # 转换为字符串并清理
         datetime_str = str(datetime_value).strip()

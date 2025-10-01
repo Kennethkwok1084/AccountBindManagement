@@ -31,6 +31,18 @@ st.set_page_config(
 # 应用全局样式
 apply_global_style()
 
+# 启动定时任务调度器（仅在主线程启动一次）
+if 'scheduler_started' not in st.session_state:
+    try:
+        from utils.scheduler import start_scheduler, get_scheduler
+        start_scheduler()
+        scheduler = get_scheduler()
+        st.session_state.scheduler_started = True
+        st.session_state.scheduler_next_run = scheduler.get_next_run_time()
+    except Exception as e:
+        st.session_state.scheduler_started = False
+        st.session_state.scheduler_error = str(e)
+
 # 页面标题
 render_page_header(
     "校园网上网账号管理系统",
@@ -240,10 +252,19 @@ try:
             )
 
         with col2:
+            # 获取下次自动维护时间
+            next_run_info = ""
+            if st.session_state.get('scheduler_started', False):
+                from utils.scheduler import get_scheduler
+                scheduler = get_scheduler()
+                next_run = scheduler.get_next_run_time()
+                if next_run:
+                    next_run_info = f"<br>下次自动维护: **{next_run.strftime('%Y-%m-%d %H:%M:%S')}**"
+
             render_info_card(
                 "系统设置",
                 f"""
-                上次自动维护: **{settings.get('上次自动维护执行时间', '未执行')}**<br>
+                上次自动维护: **{settings.get('上次自动维护执行时间', '未执行')}**{next_run_info}<br>
                 0元账号状态: **{settings.get('0元账号启用状态', '未知')}**
                 """,
                 "⚙️",
