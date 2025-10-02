@@ -445,6 +445,7 @@ class SystemMaintenance:
             # 获取系统设置
             settings = {
                 '上次缴费导入时间': SystemSettingsOperations.get_setting('上次缴费导入时间'),
+                '上次用户列表导入时间': SystemSettingsOperations.get_setting('上次用户列表导入时间'),
                 '上次数据校准时间': SystemSettingsOperations.get_setting('上次数据校准时间'),
                 '上次自动维护执行时间': SystemSettingsOperations.get_setting('上次自动维护执行时间'),
                 '0元账号启用状态': SystemSettingsOperations.get_setting('0元账号启用状态'),

@@ -131,9 +131,10 @@ def process_user_list_import(file_buffer):
 
         # 更新导入时间
         if result['success']:
+            from datetime import datetime
             SystemSettingsOperations.set_setting(
                 '上次用户列表导入时间',
-                pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             )
 
     except Exception as e:
@@ -142,7 +143,7 @@ def process_user_list_import(file_buffer):
     return result
 
 def sync_bindings_from_user_list():
-    """从用户列表同步绑定关系到账号池"""
+    """从用户列表同步绑定关系到账号池（批量优化版本）"""
     result = {
         'success': False,
         'message': '',
@@ -152,69 +153,61 @@ def sync_bindings_from_user_list():
     }
 
     try:
-        # 获取所有用户列表记录
-        user_list = db_manager.execute_query('SELECT * FROM user_list')
+        # 使用批量 SQL 操作，避免逐条查询
+        with db_manager.get_connection(enable_performance_mode=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION")
 
-        for user in user_list:
             try:
-                if user['移动账号']:
-                    # 检查账号是否存在于账号池中
-                    existing_account = ISPAccountOperations.get_account(user['移动账号'])
+                # 1. 批量更新已存在的账号（使用 JOIN）
+                update_query = '''
+                    UPDATE isp_accounts
+                    SET 状态 = '已使用',
+                        绑定的学号 = (SELECT 用户账号 FROM user_list WHERE user_list.移动账号 = isp_accounts.账号),
+                        绑定的套餐到期日 = (SELECT 到期日期 FROM user_list WHERE user_list.移动账号 = isp_accounts.账号),
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 账号 IN (SELECT 移动账号 FROM user_list WHERE 移动账号 IS NOT NULL AND 移动账号 != '')
+                '''
+                cursor.execute(update_query)
+                result['updated_count'] = cursor.rowcount
 
-                    if existing_account:
-                        # 账号存在，更新绑定状态
-                        success = ISPAccountOperations.update_account(
-                            user['移动账号'],
-                            状态='已使用',
-                            绑定的学号=user['用户账号'],
-                            绑定的套餐到期日=user['到期日期']
-                        )
+                # 2. 批量创建不存在的账号（找出 user_list 中有但 isp_accounts 中没有的账号）
+                create_query = '''
+                    INSERT OR IGNORE INTO isp_accounts (账号, 账号类型, 状态, 绑定的学号, 绑定的套餐到期日, 创建时间, 更新时间)
+                    SELECT
+                        ul.移动账号,
+                        '未知' as 账号类型,
+                        '已停机' as 状态,
+                        ul.用户账号 as 绑定的学号,
+                        ul.到期日期 as 绑定的套餐到期日,
+                        datetime('now', 'localtime'),
+                        datetime('now', 'localtime')
+                    FROM user_list ul
+                    WHERE ul.移动账号 IS NOT NULL
+                        AND ul.移动账号 != ''
+                        AND ul.移动账号 NOT IN (SELECT 账号 FROM isp_accounts)
+                '''
+                cursor.execute(create_query)
+                result['created_count'] = cursor.rowcount
 
-                        if success:
-                            result['updated_count'] += 1
-                        else:
-                            result['error_count'] += 1
-                    else:
-                        # 账号不存在，创建新账号并标记为已停机
-                        success = ISPAccountOperations.create_account(
-                            user['移动账号'],
-                            '未知',  # 账号类型未知
-                            '已停机',  # 不在账号池中的账号标记为已停机
-                            None,  # 无生命周期开始日期
-                            None   # 无生命周期结束日期
-                        )
-
-                        if success:
-                            # 立即更新绑定信息
-                            update_success = ISPAccountOperations.update_account(
-                                user['移动账号'],
-                                绑定的学号=user['用户账号'],
-                                绑定的套餐到期日=user['到期日期']
-                            )
-
-                            if update_success:
-                                result['created_count'] += 1
-                            else:
-                                result['error_count'] += 1
-                        else:
-                            result['error_count'] += 1
+                cursor.execute("COMMIT")
+                result['success'] = True
 
             except Exception as e:
-                result['error_count'] += 1
+                cursor.execute("ROLLBACK")
+                raise e
 
-        result['success'] = True
         message_parts = []
         if result['updated_count'] > 0:
             message_parts.append(f"更新了 {result['updated_count']} 个现有账号")
         if result['created_count'] > 0:
             message_parts.append(f"新建了 {result['created_count']} 个缺失账号")
-        if result['error_count'] > 0:
-            message_parts.append(f"{result['error_count']} 个失败")
 
         result['message'] = f"同步完成：{', '.join(message_parts) if message_parts else '无需更新'}"
 
     except Exception as e:
         result['message'] = f"同步失败: {e}"
+        result['success'] = False
 
     return result
 
