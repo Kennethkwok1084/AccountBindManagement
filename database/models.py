@@ -39,8 +39,8 @@ class DatabaseManager:
                     生命周期结束日期 DATE,
                     绑定的学号 TEXT,
                     绑定的套餐到期日 DATE,
-                    创建时间 TIMESTAMP DEFAULT datetime('now', 'localtime'),
-                    更新时间 TIMESTAMP DEFAULT datetime('now', 'localtime')
+                    创建时间 TIMESTAMP,
+                    更新时间 TIMESTAMP
                 )
             ''')
 
@@ -52,7 +52,7 @@ class DatabaseManager:
                     缴费时间 TIMESTAMP NOT NULL,
                     缴费金额 REAL NOT NULL,
                     处理状态 TEXT NOT NULL DEFAULT '待处理',
-                    创建时间 TIMESTAMP DEFAULT datetime('now', 'localtime'),
+                    创建时间 TIMESTAMP,
                     处理时间 TIMESTAMP
                 )
             ''')
@@ -68,8 +68,8 @@ class DatabaseManager:
                     联通账号 TEXT,
                     电信账号 TEXT,
                     到期日期 DATE,
-                    导入时间 TIMESTAMP DEFAULT datetime('now', 'localtime'),
-                    更新时间 TIMESTAMP DEFAULT datetime('now', 'localtime')
+                    导入时间 TIMESTAMP,
+                    更新时间 TIMESTAMP
                 )
             ''')
 
@@ -79,7 +79,7 @@ class DatabaseManager:
                     配置项 TEXT PRIMARY KEY,
                     配置值 TEXT,
                     描述 TEXT,
-                    更新时间 TIMESTAMP DEFAULT datetime('now', 'localtime')
+                    更新时间 TIMESTAMP
                 )
             ''')
 
@@ -192,8 +192,8 @@ class DatabaseManager:
     def bulk_upsert_accounts(self, accounts_data: List[tuple]) -> int:
         """批量插入或更新账号"""
         upsert_query = '''
-            INSERT INTO isp_accounts (账号, 账号类型, 状态, 生命周期开始日期, 生命周期结束日期)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO isp_accounts (账号, 账号类型, 状态, 生命周期开始日期, 生命周期结束日期, 创建时间, 更新时间)
+            VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
             ON CONFLICT(账号) DO UPDATE SET
                 账号类型 = excluded.账号类型,
                 状态 = excluded.状态,

@@ -20,8 +20,8 @@ class ISPAccountOperations:
         """创建新账号"""
         try:
             query = '''
-                INSERT INTO isp_accounts (账号, 账号类型, 状态, 生命周期开始日期, 生命周期结束日期)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO isp_accounts (账号, 账号类型, 状态, 生命周期开始日期, 生命周期结束日期, 创建时间, 更新时间)
+                VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
             '''
             db_manager.execute_update(query, (
                 账号, 账号类型, 状态, 生命周期开始日期, 生命周期结束日期
@@ -145,8 +145,8 @@ class PaymentOperations:
         """添加缴费记录"""
         try:
             query = '''
-                INSERT INTO payment_logs (学号, 缴费时间, 缴费金额)
-                VALUES (?, ?, ?)
+                INSERT INTO payment_logs (学号, 缴费时间, 缴费金额, 创建时间)
+                VALUES (?, ?, ?, datetime('now', 'localtime'))
             '''
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
