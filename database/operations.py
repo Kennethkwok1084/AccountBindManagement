@@ -49,7 +49,7 @@ class ISPAccountOperations:
             params.append(账号)
             query = f'''
                 UPDATE isp_accounts
-                SET {', '.join(set_clauses)}, 更新时间 = CURRENT_TIMESTAMP
+                SET {', '.join(set_clauses)}, 更新时间 = datetime('now', 'localtime')
                 WHERE 账号 = ?
             '''
 
@@ -79,7 +79,7 @@ class ISPAccountOperations:
         query = '''
             SELECT * FROM isp_accounts
             WHERE 状态 = '未使用'
-            AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now'))
+            AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
             ORDER BY 创建时间
         '''
 
@@ -173,7 +173,7 @@ class PaymentOperations:
         try:
             query = '''
                 UPDATE payment_logs
-                SET 处理状态 = ?, 处理时间 = CURRENT_TIMESTAMP
+                SET 处理状态 = ?, 处理时间 = datetime('now', 'localtime')
                 WHERE 记录ID = ?
             '''
             affected_rows = db_manager.execute_update(query, (处理状态, 记录ID))
@@ -209,7 +209,7 @@ class SystemSettingsOperations:
         try:
             query = '''
                 INSERT OR REPLACE INTO system_settings (配置项, 配置值, 更新时间)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, datetime('now', 'localtime'))
             '''
             db_manager.execute_update(query, (配置项, 配置值))
             return True
@@ -233,10 +233,10 @@ class MaintenanceOperations:
         query = '''
             UPDATE isp_accounts
             SET 状态 = '未使用', 绑定的学号 = NULL, 绑定的套餐到期日 = NULL,
-                更新时间 = CURRENT_TIMESTAMP
+                更新时间 = datetime('now', 'localtime')
             WHERE 状态 = '已使用'
-            AND 绑定的套餐到期日 < date('now')
-            AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now'))
+            AND 绑定的套餐到期日 < date('now', 'localtime')
+            AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
         '''
         return db_manager.execute_update(query)
 
@@ -246,21 +246,21 @@ class MaintenanceOperations:
         # 情况1：生命周期过期且套餐也过期（或没有绑定）-> 标记为「已过期」
         query_expired = '''
             UPDATE isp_accounts
-            SET 状态 = '已过期', 更新时间 = CURRENT_TIMESTAMP
-            WHERE 生命周期结束日期 < date('now')
+            SET 状态 = '已过期', 更新时间 = datetime('now', 'localtime')
+            WHERE 生命周期结束日期 < date('now', 'localtime')
             AND 状态 NOT IN ('已过期', '已过期但被绑定')
-            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now'))
+            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now', 'localtime'))
         '''
         count1 = db_manager.execute_update(query_expired)
 
         # 情况2：生命周期过期但套餐还没过期 -> 标记为「已过期但被绑定」
         query_expired_but_bound = '''
             UPDATE isp_accounts
-            SET 状态 = '已过期但被绑定', 更新时间 = CURRENT_TIMESTAMP
-            WHERE 生命周期结束日期 < date('now')
+            SET 状态 = '已过期但被绑定', 更新时间 = datetime('now', 'localtime')
+            WHERE 生命周期结束日期 < date('now', 'localtime')
             AND 状态 NOT IN ('已过期', '已过期但被绑定')
             AND 绑定的套餐到期日 IS NOT NULL
-            AND 绑定的套餐到期日 >= date('now')
+            AND 绑定的套餐到期日 >= date('now', 'localtime')
         '''
         count2 = db_manager.execute_update(query_expired_but_bound)
 
@@ -271,8 +271,8 @@ class MaintenanceOperations:
         """自动标记套餐已到期的用户"""
         query = '''
             UPDATE user_list
-            SET 绑定套餐 = '已到期', 更新时间 = CURRENT_TIMESTAMP
-            WHERE 到期日期 < date('now')
+            SET 绑定套餐 = '已到期', 更新时间 = datetime('now', 'localtime')
+            WHERE 到期日期 < date('now', 'localtime')
             AND 绑定套餐 != '已到期'
             AND 绑定套餐 IS NOT NULL
             AND 绑定套餐 != ''
@@ -284,9 +284,9 @@ class MaintenanceOperations:
         """自动将「已过期但被绑定」且套餐也过期的账号转换为「已过期」"""
         query = '''
             UPDATE isp_accounts
-            SET 状态 = '已过期', 更新时间 = CURRENT_TIMESTAMP
+            SET 状态 = '已过期', 更新时间 = datetime('now', 'localtime')
             WHERE 状态 = '已过期但被绑定'
-            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now'))
+            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now', 'localtime'))
         '''
         return db_manager.execute_update(query)
 

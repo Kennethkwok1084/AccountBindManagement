@@ -39,8 +39,8 @@ class DatabaseManager:
                     生命周期结束日期 DATE,
                     绑定的学号 TEXT,
                     绑定的套餐到期日 DATE,
-                    创建时间 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    更新时间 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    创建时间 TIMESTAMP DEFAULT datetime('now', 'localtime'),
+                    更新时间 TIMESTAMP DEFAULT datetime('now', 'localtime')
                 )
             ''')
 
@@ -52,7 +52,7 @@ class DatabaseManager:
                     缴费时间 TIMESTAMP NOT NULL,
                     缴费金额 REAL NOT NULL,
                     处理状态 TEXT NOT NULL DEFAULT '待处理',
-                    创建时间 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    创建时间 TIMESTAMP DEFAULT datetime('now', 'localtime'),
                     处理时间 TIMESTAMP
                 )
             ''')
@@ -68,8 +68,8 @@ class DatabaseManager:
                     联通账号 TEXT,
                     电信账号 TEXT,
                     到期日期 DATE,
-                    导入时间 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    更新时间 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    导入时间 TIMESTAMP DEFAULT datetime('now', 'localtime'),
+                    更新时间 TIMESTAMP DEFAULT datetime('now', 'localtime')
                 )
             ''')
 
@@ -79,7 +79,7 @@ class DatabaseManager:
                     配置项 TEXT PRIMARY KEY,
                     配置值 TEXT,
                     描述 TEXT,
-                    更新时间 TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    更新时间 TIMESTAMP DEFAULT datetime('now', 'localtime')
                 )
             ''')
 
@@ -199,7 +199,7 @@ class DatabaseManager:
                 状态 = excluded.状态,
                 生命周期开始日期 = excluded.生命周期开始日期,
                 生命周期结束日期 = excluded.生命周期结束日期,
-                更新时间 = CURRENT_TIMESTAMP
+                更新时间 = datetime('now', 'localtime')
         '''
 
         with self.get_connection(enable_performance_mode=True) as conn:

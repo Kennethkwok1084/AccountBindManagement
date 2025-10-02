@@ -338,7 +338,7 @@ class PaymentProcessor:
                             from database.models import db_manager
                             db_manager.execute_update('''
                                 UPDATE user_list
-                                SET 移动账号 = ?, 联通账号 = NULL, 电信账号 = NULL, 更新时间 = CURRENT_TIMESTAMP
+                                SET 移动账号 = ?, 联通账号 = NULL, 电信账号 = NULL, 更新时间 = datetime('now', 'localtime')
                                 WHERE 用户账号 = ?
                             ''', (account['账号'], payment['学号']))
 

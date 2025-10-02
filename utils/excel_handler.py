@@ -194,10 +194,11 @@ class BindingExcelProcessor(ExcelProcessor):
 class PaymentExcelProcessor(ExcelProcessor):
     """缴费Excel处理器"""
 
-    def __init__(self):
+    def __init__(self, auto_convert_utc_to_beijing=True):
         self.required_columns = ['用户账号', '收费时间']
         self.amount_column_candidates = ['收费金额', '收费金额（元）', '金额']
         self.optional_columns = ['移动账号']
+        self.auto_convert_utc_to_beijing = auto_convert_utc_to_beijing  # 是否自动将 UTC 转换为北京时间
 
     def process_payment_import(self, file_buffer, last_import_time: Optional[datetime] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
         """处理缴费Excel文件"""
@@ -259,39 +260,54 @@ class PaymentExcelProcessor(ExcelProcessor):
             return [], [f"文件处理错误: {e}"]
 
     def _parse_datetime(self, datetime_value) -> Optional[datetime]:
-        """解析日期时间，支持多种格式包括带毫秒的格式"""
+        """解析日期时间，支持多种格式包括带毫秒的格式
+
+        注意：如果 auto_convert_utc_to_beijing=True，会自动将 UTC 时间转换为北京时间（UTC+8）
+        """
+        from datetime import timedelta
+
         if pd.isna(datetime_value):
             return None
 
+        parsed_dt = None
+
         # 如果是 pandas Timestamp 对象，直接转换为 datetime
         if isinstance(datetime_value, pd.Timestamp):
-            # 去除时区信息（如果有），保持原始时间
-            return datetime_value.to_pydatetime().replace(tzinfo=None)
+            parsed_dt = datetime_value.to_pydatetime().replace(tzinfo=None)
 
-        if isinstance(datetime_value, datetime):
-            # 去除时区信息（如果有），保持原始时间
-            return datetime_value.replace(tzinfo=None)
+        elif isinstance(datetime_value, datetime):
+            parsed_dt = datetime_value.replace(tzinfo=None)
 
-        # 转换为字符串并清理
-        datetime_str = str(datetime_value).strip()
+        else:
+            # 转换为字符串并清理
+            datetime_str = str(datetime_value).strip()
 
-        # 尝试多种日期时间格式
-        formats = [
-            '%Y-%m-%d %H:%M:%S.%f',  # 2025-10-01 14:02:37.0
-            '%Y-%m-%d %H:%M:%S',     # 2025-10-01 14:02:37
-            '%Y/%m/%d %H:%M:%S.%f',  # 2025/10/01 14:02:37.0
-            '%Y/%m/%d %H:%M:%S',     # 2025/10/01 14:02:37
-            '%Y-%m-%d',              # 2025-10-01
-            '%Y/%m/%d',              # 2025/10/01
-        ]
+            # 尝试多种日期时间格式
+            formats = [
+                '%Y-%m-%d %H:%M:%S.%f',  # 2025-10-01 14:02:37.0
+                '%Y-%m-%d %H:%M:%S',     # 2025-10-01 14:02:37
+                '%Y/%m/%d %H:%M:%S.%f',  # 2025/10/01 14:02:37.0
+                '%Y/%m/%d %H:%M:%S',     # 2025/10/01 14:02:37
+                '%Y-%m-%d',              # 2025-10-01
+                '%Y/%m/%d',              # 2025/10/01
+            ]
 
-        for fmt in formats:
-            try:
-                return datetime.strptime(datetime_str, fmt)
-            except:
-                continue
+            for fmt in formats:
+                try:
+                    parsed_dt = datetime.strptime(datetime_str, fmt)
+                    break
+                except:
+                    continue
 
-        return None
+        if parsed_dt is None:
+            return None
+
+        # 如果启用了 UTC 到北京时间的自动转换
+        if self.auto_convert_utc_to_beijing:
+            # 将 UTC 时间转换为北京时间（+8 小时）
+            parsed_dt = parsed_dt + timedelta(hours=8)
+
+        return parsed_dt
 
 
 class ExportExcelProcessor(ExcelProcessor):

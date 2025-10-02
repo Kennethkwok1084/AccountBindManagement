@@ -110,7 +110,7 @@ def process_user_list_import(file_buffer):
                 query = '''
                     INSERT OR REPLACE INTO user_list
                     (用户账号, 绑定套餐, 用户姓名, 用户类别, 移动账号, 联通账号, 电信账号, 到期日期, 更新时间)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
                 '''
 
                 db_manager.execute_update(query, (
