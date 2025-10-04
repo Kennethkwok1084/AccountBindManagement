@@ -5,8 +5,9 @@
 Date Utilities
 """
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, Tuple
+from dateutil.relativedelta import relativedelta
 import re
 
 
@@ -47,6 +48,36 @@ class DateCalculator:
 
         # 如果无法解析，返回None
         return None, None
+
+    @staticmethod
+    def calculate_subscription_expiry(缴费时间: datetime, 缴费金额: float) -> Tuple[str, Optional[date]]:
+        """
+        根据缴费金额计算套餐类型和到期日期
+
+        Args:
+            缴费时间: 缴费时间
+            缴费金额: 缴费金额
+
+        Returns:
+            (套餐类型, 到期日期)
+            - 30元 → ("包月", 缴费时间 + 1个月)
+            - 300元 → ("包年", 缴费时间 + 1年)
+            - 其他 → ("未知套餐", None)
+        """
+        缴费日期 = 缴费时间.date() if isinstance(缴费时间, datetime) else 缴费时间
+
+        # 根据金额判断套餐类型
+        if 缴费金额 == 30:
+            套餐类型 = "包月"
+            到期日期 = 缴费日期 + relativedelta(months=1)
+        elif 缴费金额 == 300:
+            套餐类型 = "包年"
+            到期日期 = 缴费日期 + relativedelta(years=1)
+        else:
+            套餐类型 = f"{int(缴费金额)}元套餐"
+            到期日期 = None
+
+        return 套餐类型, 到期日期
 
     @staticmethod
     def is_account_expired(生命周期结束日期: Optional[date]) -> bool:

@@ -52,9 +52,28 @@ class ExcelProcessor:
             if not isinstance(df, pd.DataFrame):
                 raise ValueError(f"pandas.read_excel返回了意外的类型: {type(df)}，这通常是因为sheet_name参数问题")
 
-            # 清理列名（去除空白字符）
+            # 强力清理列名（去除所有不可见字符）
             if hasattr(df, 'columns'):
-                df.columns = df.columns.str.strip()
+                # 清理步骤：
+                # 1. 转为字符串
+                # 2. 去除 BOM (U+FEFF)
+                # 3. 去除首尾空白字符
+                # 4. 去除零宽字符和其他不可见字符
+                cleaned_columns = []
+                for col in df.columns:
+                    col_str = str(col)
+                    # 去除 BOM 和其他不可见字符
+                    col_str = col_str.replace('\ufeff', '')  # BOM
+                    col_str = col_str.replace('\u200b', '')  # 零宽空格
+                    col_str = col_str.replace('\xa0', ' ')   # 不间断空格转为普通空格
+                    col_str = col_str.strip()  # 去除首尾空白
+                    cleaned_columns.append(col_str)
+
+                df.columns = cleaned_columns
+
+                # 打印调试信息（可选）
+                # print(f"原始列名: {list(df.columns)}")
+                # print(f"清理后列名: {cleaned_columns}")
             else:
                 raise ValueError(f"返回的对象没有columns属性: {type(df)}")
 
@@ -194,11 +213,11 @@ class BindingExcelProcessor(ExcelProcessor):
 class PaymentExcelProcessor(ExcelProcessor):
     """缴费Excel处理器"""
 
-    def __init__(self, auto_convert_utc_to_beijing=True):
+    def __init__(self, auto_convert_utc_to_beijing=False):
         self.required_columns = ['用户账号', '收费时间']
         self.amount_column_candidates = ['收费金额', '收费金额（元）', '金额']
         self.optional_columns = ['移动账号']
-        self.auto_convert_utc_to_beijing = auto_convert_utc_to_beijing  # 是否自动将 UTC 转换为北京时间
+        self.auto_convert_utc_to_beijing = auto_convert_utc_to_beijing  # 是否自动将 UTC 转换为北京时间（默认关闭）
 
     def process_payment_import(self, file_buffer, last_import_time: Optional[datetime] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
         """处理缴费Excel文件"""
@@ -206,10 +225,27 @@ class PaymentExcelProcessor(ExcelProcessor):
             df = self.read_excel_file(file_buffer)
             errors = []
 
+            # 列名映射（兼容不同的导出格式）
+            column_mapping = {
+                '学号': '用户账号',
+                '缴费时间': '收费时间',
+                '缴费金额': '收费金额',
+                '收费金额（元）': '收费金额',  # 带单位的格式
+                '记录ID': None,  # 忽略这些列
+                '处理状态': None,
+                '创建时间': None,
+                '处理时间': None,
+            }
+
+            # 应用列名映射（只映射存在的列）
+            rename_dict = {k: v for k, v in column_mapping.items() if k in df.columns and v is not None}
+            df.rename(columns=rename_dict, inplace=True)
+
             # 验证必需列
             missing_columns = [col for col in self.required_columns if col not in df.columns]
             if missing_columns:
-                raise ValueError(f"缺少必需列: {', '.join(missing_columns)}")
+                # 提供更详细的错误信息
+                raise ValueError(f"缺少必需列: {', '.join(missing_columns)}，当前列: {list(df.columns)}")
 
             # 智能识别收费金额列
             amount_column = None
@@ -313,23 +349,44 @@ class PaymentExcelProcessor(ExcelProcessor):
 class ExportExcelProcessor(ExcelProcessor):
     """导出Excel处理器"""
 
-    def create_binding_export_file(self, binding_data: List[Tuple[str, str]], filename: str = None) -> str:
-        """创建绑定导出文件"""
+    def create_binding_export_file(self, binding_data, filename: str = None) -> str:
+        """创建绑定导出文件
+
+        Args:
+            binding_data: 可以是元组列表 [(学号, 移动账号)] 或字典列表 [{'学号': ..., '移动账号': ..., ...}]
+        """
         if filename is None:
             filename = f'绑定导出_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
 
         # 构造导出数据
         export_data = []
-        for 学号, 移动账号 in binding_data:
-            export_data.append({
-                '账号': 学号,
-                '移动账号': 移动账号,
-                '移动密码': '',  # 留空
-                '联通账号': '',  # 留空
-                '联通密码': '',  # 留空
-                '电信账号': '',  # 留空
-                '电信密码': ''   # 留空
-            })
+        for item in binding_data:
+            if isinstance(item, dict):
+                # 字典格式（新版，包含套餐信息）
+                export_data.append({
+                    '账号': item.get('学号', ''),
+                    '移动账号': item.get('移动账号', ''),
+                    '移动密码': '',  # 留空
+                    '联通账号': '',  # 留空
+                    '联通密码': '',  # 留空
+                    '电信账号': '',  # 留空
+                    '电信密码': '',  # 留空
+                    '套餐类型': item.get('套餐类型', ''),
+                    '到期日期': item.get('到期日期', ''),
+                    '缴费金额': item.get('缴费金额', '')
+                })
+            else:
+                # 元组格式（旧版兼容）
+                学号, 移动账号 = item
+                export_data.append({
+                    '账号': 学号,
+                    '移动账号': 移动账号,
+                    '移动密码': '',
+                    '联通账号': '',
+                    '联通密码': '',
+                    '电信账号': '',
+                    '电信密码': ''
+                })
 
         return self.save_to_excel(export_data, filename, '批量修改')
 

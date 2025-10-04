@@ -322,33 +322,49 @@ class PaymentProcessor:
 
             for payment in pending_payments:
                 try:
+                    # 根据缴费金额计算套餐类型和到期日期
+                    套餐类型, 到期日期 = date_calculator.calculate_subscription_expiry(
+                        payment['缴费时间'], payment['缴费金额']
+                    )
+
                     # 寻找可用账号
                     available_accounts = ISPAccountOperations.get_available_accounts(limit=1)
 
                     if available_accounts:
                         account = available_accounts[0]
 
-                        # 绑定账号到学生
-                        bind_success = ISPAccountOperations.bind_account_to_student(
-                            account['账号'], payment['学号']
+                        # 绑定账号到学生，并设置套餐到期日
+                        bind_success = ISPAccountOperations.update_account(
+                            account['账号'],
+                            状态='已使用',
+                            绑定的学号=payment['学号'],
+                            绑定的套餐到期日=到期日期
                         )
 
                         if bind_success:
-                            # 更新用户列表：设置移动账号，清空联通/电信账号
+                            # 更新用户列表：设置移动账号、套餐类型、到期日期
                             from database.models import db_manager
                             db_manager.execute_update('''
                                 UPDATE user_list
-                                SET 移动账号 = ?, 联通账号 = NULL, 电信账号 = NULL, 更新时间 = datetime('now', 'localtime')
+                                SET 移动账号 = ?, 联通账号 = NULL, 电信账号 = NULL,
+                                    绑定套餐 = ?, 到期日期 = ?,
+                                    更新时间 = datetime('now', 'localtime')
                                 WHERE 用户账号 = ?
-                            ''', (account['账号'], payment['学号']))
+                            ''', (account['账号'], 套餐类型, 到期日期, payment['学号']))
 
                             # 更新缴费记录状态
                             PaymentOperations.update_payment_status(
                                 payment['记录ID'], '已处理'
                             )
 
-                            # 添加到导出数据
-                            binding_pairs.append((payment['学号'], account['账号']))
+                            # 添加到导出数据（包含套餐信息）
+                            binding_pairs.append({
+                                '学号': payment['学号'],
+                                '移动账号': account['账号'],
+                                '套餐类型': 套餐类型,
+                                '到期日期': 到期日期.strftime('%Y-%m-%d') if 到期日期 else '',
+                                '缴费金额': payment['缴费金额']
+                            })
                             result['processed_count'] += 1
                         else:
                             PaymentOperations.update_payment_status(
