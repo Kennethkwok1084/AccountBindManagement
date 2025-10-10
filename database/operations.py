@@ -493,6 +493,185 @@ class MaintenanceOperations:
             return processed_groups, rebind_count, cleared_count
 
     @staticmethod
+    def get_duplicate_mobile_bindings() -> List[Dict[str, Any]]:
+        """获取重复移动账号的详细信息"""
+        duplicate_query = '''
+            SELECT 移动账号
+            FROM user_list
+            WHERE 移动账号 IS NOT NULL
+              AND 移动账号 != ''
+            GROUP BY 移动账号
+            HAVING COUNT(*) > 1
+        '''
+
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(duplicate_query)
+            duplicate_rows = cursor.fetchall()
+
+            if not duplicate_rows:
+                return []
+
+            duplicate_accounts = [row['移动账号'] for row in duplicate_rows if row['移动账号']]
+            placeholders = ','.join(['?'] * len(duplicate_accounts))
+
+            detail_query = f'''
+                SELECT
+                    ul.移动账号,
+                    ul.用户账号,
+                    ul.用户姓名,
+                    ul.用户类别,
+                    ul.到期日期,
+                    ul.更新时间,
+                    ia.状态 AS 账号状态,
+                    ia.绑定的学号 AS 账号绑定学号,
+                    ia.绑定的套餐到期日 AS 账号绑定到期日
+                FROM user_list ul
+                LEFT JOIN isp_accounts ia ON ia.账号 = ul.移动账号
+                WHERE ul.移动账号 IN ({placeholders})
+                ORDER BY ul.移动账号, ul.更新时间 DESC
+            '''
+
+            cursor.execute(detail_query, tuple(duplicate_accounts))
+            detail_rows = cursor.fetchall()
+
+            groups: Dict[str, Dict[str, Any]] = {}
+            for row in detail_rows:
+                mobile_account = row['移动账号']
+                if mobile_account not in groups:
+                    groups[mobile_account] = {
+                        '移动账号': mobile_account,
+                        '账号状态': row['账号状态'],
+                        '账号绑定学号': row['账号绑定学号'],
+                        '账号绑定到期日': row['账号绑定到期日'],
+                        '学生列表': []
+                    }
+
+                groups[mobile_account]['学生列表'].append({
+                    '用户账号': row['用户账号'],
+                    '用户姓名': row['用户姓名'],
+                    '用户类别': row['用户类别'],
+                    '到期日期': row['到期日期'],
+                    '更新时间': row['更新时间'],
+                    '是否账号当前绑定': (row['用户账号'] == row['账号绑定学号'])
+                })
+
+            return list(groups.values())
+
+    @staticmethod
+    def manual_rebind_duplicate_student(移动账号: str, 用户账号: str) -> Tuple[bool, str, Optional[str]]:
+        """
+        手动为重复绑定的学号换绑新的未使用账号
+
+        Returns:
+            (成功标记, 消息, 新账号)
+        """
+        with db_manager.get_connection(enable_performance_mode=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION")
+
+            try:
+                cursor.execute(
+                    '''
+                    SELECT 用户账号, 移动账号, 到期日期
+                    FROM user_list
+                    WHERE 用户账号 = ?
+                      AND 移动账号 = ?
+                    LIMIT 1
+                    ''',
+                    (用户账号, 移动账号)
+                )
+                user_entry = cursor.fetchone()
+
+                if not user_entry:
+                    cursor.execute("ROLLBACK")
+                    return False, "未找到匹配的重复绑定记录", None
+
+                cursor.execute(
+                    '''
+                    SELECT 账号
+                    FROM isp_accounts
+                    WHERE 状态 = '未使用'
+                      AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
+                    ORDER BY 创建时间, 账号
+                    LIMIT 1
+                    '''
+                )
+                new_account_row = cursor.fetchone()
+
+                if not new_account_row:
+                    cursor.execute("ROLLBACK")
+                    return False, "没有可用的未使用账号", None
+
+                new_account = new_account_row['账号']
+
+                cursor.execute(
+                    '''
+                    UPDATE isp_accounts
+                    SET 状态 = '已使用',
+                        绑定的学号 = ?,
+                        绑定的套餐到期日 = ?,
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 账号 = ?
+                    ''',
+                    (用户账号, user_entry['到期日期'], new_account)
+                )
+
+                cursor.execute(
+                    '''
+                    UPDATE user_list
+                    SET 移动账号 = ?,
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 用户账号 = ?
+                    ''',
+                    (new_account, 用户账号)
+                )
+
+                cursor.execute(
+                    '''
+                    SELECT 用户账号, 到期日期
+                    FROM user_list
+                    WHERE 移动账号 = ?
+                    ORDER BY 更新时间 DESC
+                    ''',
+                    (移动账号,)
+                )
+                remaining_entries = cursor.fetchall()
+
+                if remaining_entries:
+                    keeper = remaining_entries[0]
+                    cursor.execute(
+                        '''
+                        UPDATE isp_accounts
+                        SET 状态 = '已使用',
+                            绑定的学号 = ?,
+                            绑定的套餐到期日 = ?,
+                            更新时间 = datetime('now', 'localtime')
+                        WHERE 账号 = ?
+                        ''',
+                        (keeper['用户账号'], keeper['到期日期'], 移动账号)
+                    )
+                else:
+                    cursor.execute(
+                        '''
+                        UPDATE isp_accounts
+                        SET 状态 = '未使用',
+                            绑定的学号 = NULL,
+                            绑定的套餐到期日 = NULL,
+                            更新时间 = datetime('now', 'localtime')
+                        WHERE 账号 = ?
+                        ''',
+                        (移动账号,)
+                    )
+
+                cursor.execute("COMMIT")
+                return True, f"学号 {用户账号} 已换绑到账号 {new_account}", new_account
+
+            except Exception as e:
+                cursor.execute("ROLLBACK")
+                return False, f"换绑失败: {e}", None
+
+    @staticmethod
     def run_daily_maintenance() -> Tuple[int, int, int, int, int, int, int]:
         """执行每日维护任务"""
         released_count = MaintenanceOperations.auto_release_expired_bindings()
