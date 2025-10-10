@@ -126,10 +126,32 @@ class ISPAccountOperations:
 
     @staticmethod
     def release_account(账号: str) -> bool:
-        """释放账号（清除绑定信息）"""
-        return ISPAccountOperations.update_account(
-            账号, 状态='未使用', 绑定的学号=None, 绑定的套餐到期日=None
-        )
+        """释放账号（清除绑定信息并同步用户列表）"""
+        try:
+            account = ISPAccountOperations.get_account(账号)
+            success = ISPAccountOperations.update_account(
+                账号, 状态='未使用', 绑定的学号=None, 绑定的套餐到期日=None
+            )
+
+            if success and account and account.get('绑定的学号'):
+                try:
+                    db_manager.execute_update(
+                        '''
+                        UPDATE user_list
+                        SET 移动账号 = NULL,
+                            更新时间 = datetime('now', 'localtime')
+                        WHERE 用户账号 = ?
+                          AND 移动账号 = ?
+                        ''',
+                        (account['绑定的学号'], 账号)
+                    )
+                except Exception as inner_e:
+                    print(f"同步用户列表失败: {inner_e}")
+
+            return success
+        except Exception as e:
+            print(f"释放账号失败: {e}")
+            return False
 
     @staticmethod
     def expire_account(账号: str) -> bool:
@@ -230,15 +252,57 @@ class MaintenanceOperations:
     @staticmethod
     def auto_release_expired_bindings() -> int:
         """自动释放套餐到期的账号绑定"""
-        query = '''
-            UPDATE isp_accounts
-            SET 状态 = '未使用', 绑定的学号 = NULL, 绑定的套餐到期日 = NULL,
-                更新时间 = datetime('now', 'localtime')
+        selection_query = '''
+            SELECT 账号, 绑定的学号
+            FROM isp_accounts
             WHERE 状态 = '已使用'
-            AND 绑定的套餐到期日 < date('now', 'localtime')
-            AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
+              AND 绑定的套餐到期日 < date('now', 'localtime')
+              AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
         '''
-        return db_manager.execute_update(query)
+
+        with db_manager.get_connection(enable_performance_mode=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(selection_query)
+            rows = cursor.fetchall()
+
+            if not rows:
+                return 0
+
+            account_ids = [row['账号'] for row in rows]
+
+            placeholders = ','.join(['?'] * len(account_ids))
+            update_query = f'''
+                UPDATE isp_accounts
+                SET 状态 = '未使用',
+                    绑定的学号 = NULL,
+                    绑定的套餐到期日 = NULL,
+                    更新时间 = datetime('now', 'localtime')
+                WHERE 账号 IN ({placeholders})
+            '''
+            cursor.execute(update_query, tuple(account_ids))
+            released_count = cursor.rowcount
+
+            # 同步用户列表，移除已释放账号的移动账号字段
+            sync_params = [
+                (row['绑定的学号'], row['账号'])
+                for row in rows
+                if row['绑定的学号']
+            ]
+
+            if sync_params:
+                cursor.executemany(
+                    '''
+                    UPDATE user_list
+                    SET 移动账号 = NULL,
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 用户账号 = ?
+                      AND 移动账号 = ?
+                    ''',
+                    sync_params
+                )
+
+            conn.commit()
+            return released_count
 
     @staticmethod
     def auto_expire_lifecycle_ended() -> int:
@@ -291,18 +355,165 @@ class MaintenanceOperations:
         return db_manager.execute_update(query)
 
     @staticmethod
-    def run_daily_maintenance() -> Tuple[int, int, int, int]:
+    def auto_fix_duplicate_mobile_bindings() -> Tuple[int, int, int]:
+        """自动修复用户列表中的重复移动账号绑定"""
+        duplicate_query = '''
+            SELECT 移动账号
+            FROM user_list
+            WHERE 移动账号 IS NOT NULL
+              AND 移动账号 != ''
+            GROUP BY 移动账号
+            HAVING COUNT(*) > 1
+        '''
+
+        with db_manager.get_connection(enable_performance_mode=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(duplicate_query)
+            duplicate_accounts = cursor.fetchall()
+
+            if not duplicate_accounts:
+                return 0, 0, 0
+
+            processed_groups = 0
+            rebind_count = 0
+            cleared_count = 0
+
+            for row in duplicate_accounts:
+                mobile_account = row['移动账号']
+                if not mobile_account:
+                    continue
+
+                processed_groups += 1
+
+                cursor.execute(
+                    '''
+                    SELECT 用户账号, 到期日期, 更新时间
+                    FROM user_list
+                    WHERE 移动账号 = ?
+                    ORDER BY 更新时间 DESC
+                    ''',
+                    (mobile_account,)
+                )
+                user_entries = cursor.fetchall()
+
+                if not user_entries:
+                    continue
+
+                cursor.execute(
+                    '''
+                    SELECT 绑定的学号, 绑定的套餐到期日, 状态
+                    FROM isp_accounts
+                    WHERE 账号 = ?
+                    ''',
+                    (mobile_account,)
+                )
+                account_info = cursor.fetchone()
+
+                keeper_user = None
+                keeper_expiry = None
+                if account_info and account_info['绑定的学号']:
+                    keeper_user = account_info['绑定的学号']
+                    keeper_expiry = account_info['绑定的套餐到期日']
+
+                if keeper_user is None:
+                    keeper_user = user_entries[0]['用户账号']
+                    keeper_expiry = user_entries[0]['到期日期']
+
+                if keeper_expiry is None:
+                    for entry in user_entries:
+                        if entry['用户账号'] == keeper_user:
+                            keeper_expiry = entry['到期日期']
+                            break
+
+                # 确保原账号绑定保持一致
+                cursor.execute(
+                    '''
+                    UPDATE isp_accounts
+                    SET 绑定的学号 = ?,
+                        绑定的套餐到期日 = ?,
+                        状态 = CASE WHEN 状态 = '未使用' THEN '已使用' ELSE 状态 END,
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 账号 = ?
+                    ''',
+                    (keeper_user, keeper_expiry, mobile_account)
+                )
+
+                for entry in user_entries:
+                    if entry['用户账号'] == keeper_user:
+                        continue
+
+                    cursor.execute(
+                        '''
+                        SELECT 账号
+                        FROM isp_accounts
+                        WHERE 状态 = '未使用'
+                          AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
+                        ORDER BY 创建时间, 账号
+                        LIMIT 1
+                        '''
+                    )
+                    replacement = cursor.fetchone()
+
+                    if replacement:
+                        cursor.execute(
+                            '''
+                            UPDATE isp_accounts
+                            SET 状态 = '已使用',
+                                绑定的学号 = ?,
+                                绑定的套餐到期日 = ?,
+                                更新时间 = datetime('now', 'localtime')
+                            WHERE 账号 = ?
+                            ''',
+                            (entry['用户账号'], entry['到期日期'], replacement['账号'])
+                        )
+                        cursor.execute(
+                            '''
+                            UPDATE user_list
+                            SET 移动账号 = ?,
+                                更新时间 = datetime('now', 'localtime')
+                            WHERE 用户账号 = ?
+                            ''',
+                            (replacement['账号'], entry['用户账号'])
+                        )
+                        rebind_count += 1
+                    else:
+                        cursor.execute(
+                            '''
+                            UPDATE user_list
+                            SET 移动账号 = NULL,
+                                更新时间 = datetime('now', 'localtime')
+                            WHERE 用户账号 = ?
+                              AND 移动账号 = ?
+                            ''',
+                            (entry['用户账号'], mobile_account)
+                        )
+                        cleared_count += 1
+
+            conn.commit()
+            return processed_groups, rebind_count, cleared_count
+
+    @staticmethod
+    def run_daily_maintenance() -> Tuple[int, int, int, int, int, int, int]:
         """执行每日维护任务"""
         released_count = MaintenanceOperations.auto_release_expired_bindings()
         expired_count = MaintenanceOperations.auto_expire_lifecycle_ended()
         subscription_expired_count = MaintenanceOperations.auto_mark_expired_subscriptions()
         converted_count = MaintenanceOperations.auto_convert_expired_but_bound_to_expired()
+        duplicate_groups, rebind_count, cleared_count = MaintenanceOperations.auto_fix_duplicate_mobile_bindings()
 
         # 更新维护时间
         SystemSettingsOperations.set_setting('上次自动维护执行时间',
                                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
-        return released_count, expired_count, subscription_expired_count, converted_count
+        return (
+            released_count,
+            expired_count,
+            subscription_expired_count,
+            converted_count,
+            duplicate_groups,
+            rebind_count,
+            cleared_count
+        )
 
 
 if __name__ == "__main__":

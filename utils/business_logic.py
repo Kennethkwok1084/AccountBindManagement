@@ -342,8 +342,20 @@ class PaymentProcessor:
                         )
 
                         if bind_success:
-                            # 更新用户列表：设置移动账号、套餐类型、到期日期
+                            # 清理之前占用同一账号的用户记录，避免重复绑定
                             from database.models import db_manager
+                            db_manager.execute_update(
+                                '''
+                                UPDATE user_list
+                                SET 移动账号 = NULL,
+                                    更新时间 = datetime('now', 'localtime')
+                                WHERE 移动账号 = ?
+                                  AND 用户账号 != ?
+                                ''',
+                                (account['账号'], payment['学号'])
+                            )
+
+                            # 更新用户列表：设置移动账号、套餐类型、到期日期
                             db_manager.execute_update('''
                                 UPDATE user_list
                                 SET 移动账号 = ?, 联通账号 = NULL, 电信账号 = NULL,
@@ -420,16 +432,28 @@ class SystemMaintenance:
             'released_count': 0,
             'expired_count': 0,
             'subscription_expired_count': 0,
-            'converted_count': 0
+            'converted_count': 0,
+            'duplicate_group_count': 0,
+            'rebind_count': 0,
+            'cleared_count': 0
         }
 
         try:
-            released_count, expired_count, subscription_expired_count, converted_count = MaintenanceOperations.run_daily_maintenance()
+            (released_count,
+             expired_count,
+             subscription_expired_count,
+             converted_count,
+             duplicate_group_count,
+             rebind_count,
+             cleared_count) = MaintenanceOperations.run_daily_maintenance()
 
             result['released_count'] = released_count
             result['expired_count'] = expired_count
             result['subscription_expired_count'] = subscription_expired_count
             result['converted_count'] = converted_count
+            result['duplicate_group_count'] = duplicate_group_count
+            result['rebind_count'] = rebind_count
+            result['cleared_count'] = cleared_count
             result['success'] = True
 
             # 构建维护摘要消息
@@ -442,6 +466,10 @@ class SystemMaintenance:
                 messages.append(f"标记 {subscription_expired_count} 个到期套餐")
             if converted_count > 0:
                 messages.append(f"转换 {converted_count} 个已过期但被绑定账号")
+            if rebind_count > 0:
+                messages.append(f"换绑 {rebind_count} 个重复移动账号")
+            if cleared_count > 0:
+                messages.append(f"清理 {cleared_count} 个无法换绑的重复记录")
 
             result['message'] = "、".join(messages) if messages else "无需维护"
 
