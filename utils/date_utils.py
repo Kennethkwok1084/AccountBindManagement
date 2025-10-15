@@ -6,13 +6,61 @@ Date Utilities
 """
 
 from datetime import datetime, date, timedelta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from dateutil.relativedelta import relativedelta
 import re
 
 
 class DateCalculator:
     """日期计算工具类"""
+
+    @staticmethod
+    def parse_datetime_value(value: Any) -> Optional[datetime]:
+        """
+        将各种形式的时间值统一解析为 datetime
+
+        Args:
+            value: 可能是 datetime/date/字符串
+
+        Returns:
+            datetime 对象或 None（解析失败）
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            return value
+
+        if isinstance(value, date):
+            return datetime.combine(value, datetime.min.time())
+
+        if isinstance(value, str):
+            candidate = value.strip()
+            if not candidate:
+                return None
+
+            # 优先尝试 ISO 格式
+            try:
+                return datetime.fromisoformat(candidate)
+            except ValueError:
+                pass
+
+            formats = [
+                "%Y-%m-%d %H:%M:%S",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y/%m/%d %H:%M",
+                "%Y-%m-%d",
+                "%Y/%m/%d"
+            ]
+
+            for fmt in formats:
+                try:
+                    return datetime.strptime(candidate, fmt)
+                except ValueError:
+                    continue
+
+        return None
 
     @staticmethod
     def parse_account_type_to_dates(账号类型: str) -> Tuple[Optional[date], Optional[date]]:
@@ -64,7 +112,11 @@ class DateCalculator:
             - 300元 → ("包年", 缴费时间 + 1年)
             - 其他 → ("未知套餐", None)
         """
-        缴费日期 = 缴费时间.date() if isinstance(缴费时间, datetime) else 缴费时间
+        parsed_datetime = DateCalculator.parse_datetime_value(缴费时间)
+        if parsed_datetime is None:
+            raise ValueError(f"无法解析缴费时间: {缴费时间}")
+
+        缴费日期 = parsed_datetime.date()
 
         # 根据金额判断套餐类型
         if 缴费金额 == 30:

@@ -7,12 +7,12 @@ Core Business Logic
 
 from datetime import datetime, date
 from typing import List, Dict, Tuple, Optional, Any
+import logging
 import os
 import re
 
 # 导入数据库操作
 import sys
-import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.operations import (
@@ -27,6 +27,9 @@ from utils.excel_handler import (
 
 # 导入日期工具
 from utils.date_utils import date_calculator, business_date_helper
+
+
+logger = logging.getLogger(__name__)
 
 
 class AccountManager:
@@ -500,11 +503,21 @@ class PaymentProcessor:
                             })
                             result['processed_count'] += 1
                         else:
+                            logger.warning(
+                                "账号更新失败，账号 %s、学号 %s",
+                                account['账号'],
+                                payment['学号']
+                            )
                             PaymentOperations.update_payment_status(
                                 payment['记录ID'], '处理失败'
                             )
                             result['failed_count'] += 1
                     else:
+                        logger.warning(
+                            "未找到可用账号，学号 %s、缴费金额 %.2f",
+                            payment['学号'],
+                            payment['缴费金额']
+                        )
                         # 没有可用账号
                         PaymentOperations.update_payment_status(
                             payment['记录ID'], '处理失败'
@@ -512,6 +525,11 @@ class PaymentProcessor:
                         result['failed_count'] += 1
 
                 except Exception as e:
+                    logger.exception(
+                        "处理缴费记录失败，学号 %s、缴费金额 %.2f",
+                        payment.get('学号'),
+                        payment.get('缴费金额', 0.0)
+                    )
                     PaymentOperations.update_payment_status(
                         payment['记录ID'], '处理失败'
                     )
