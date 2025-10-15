@@ -5,10 +5,14 @@
 Rebinding Management Page
 """
 
+import os
+
+# 使用轮询监视器避免 inotify 限制带来的崩溃
+os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
+
 import streamlit as st
 import pandas as pd
 import sys
-import os
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -110,7 +114,7 @@ try:
         col1, col2, col3 = st.columns([1, 1, 1])
 
         with col2:
-            if st.button("📥 导出换绑列表Excel", type="primary", use_container_width=True):
+            if st.button("📥 导出换绑列表Excel", type="primary", width='stretch'):
                 try:
                     export_path = export_processor.save_to_excel(
                         df_data,
@@ -125,7 +129,7 @@ try:
                                 data=file.read(),
                                 file_name=os.path.basename(export_path),
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                use_container_width=True,
+                                width='stretch',
                                 key="download_rebind_list"
                             )
                             show_success_message("导出成功！点击上方按钮下载文件")

@@ -5,10 +5,14 @@
 Account Management Page - ISP Account Pool Management
 """
 
+import os
+
+# 使用轮询监视器避免 inotify 限制带来的崩溃
+os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
+
 import streamlit as st
 import pandas as pd
 import sys
-import os
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -55,7 +59,7 @@ with col1:
     )
 
     if uploaded_file is not None:
-        if st.button("📤 导入账号", type="primary", use_container_width=True):
+        if st.button("📤 导入账号", type="primary", width='stretch'):
             with st.spinner("正在处理账号数据..."):
                 result = account_manager.import_accounts_from_excel(uploaded_file)
 
@@ -90,7 +94,7 @@ with col2:
                     data=file.read(),
                     file_name="账号导入模板.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    width='stretch'
                 )
     except Exception as e:
         show_error_message(f"模板生成失败: {e}")
@@ -173,14 +177,14 @@ try:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("🔄 释放过期绑定", use_container_width=True):
+            if st.button("🔄 释放过期绑定", width='stretch'):
                 with st.spinner("正在释放过期绑定..."):
                     released_count = MaintenanceOperations.auto_release_expired_bindings()
                     show_success_message(f"释放了 {released_count} 个过期绑定")
                     st.rerun()
 
         with col2:
-            if st.button("❌ 标记过期账号", use_container_width=True):
+            if st.button("❌ 标记过期账号", width='stretch'):
                 with st.spinner("正在标记过期账号..."):
                     expired_count = MaintenanceOperations.auto_expire_lifecycle_ended()
                     show_success_message(f"标记了 {expired_count} 个过期账号")
@@ -188,7 +192,7 @@ try:
 
         with col3:
             # 导出当前搜索结果
-            if st.button("📤 导出搜索结果", use_container_width=True):
+            if st.button("📤 导出搜索结果", width='stretch'):
                 try:
                     export_path = export_processor.save_to_excel(
                         df_data,

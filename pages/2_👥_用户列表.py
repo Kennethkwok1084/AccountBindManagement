@@ -5,10 +5,14 @@
 User List Page - Actual Binding Relationship Management & Data Calibration
 """
 
+import os
+
+# 使用轮询监视器避免 inotify 限制带来的崩溃
+os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
+
 import streamlit as st
 import pandas as pd
 import sys
-import os
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -226,7 +230,7 @@ with col1:
     )
 
     if uploaded_file is not None:
-        if st.button("📤 导入用户列表", type="primary", use_container_width=True):
+        if st.button("📤 导入用户列表", type="primary", width='stretch'):
             with st.spinner("正在处理用户列表数据..."):
                 result = process_user_list_import(uploaded_file)
 
@@ -275,7 +279,7 @@ with col2:
                     data=file.read(),
                     file_name="用户列表导入模板.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    width='stretch'
                 )
     except Exception as e:
         show_error_message(f"模板生成失败: {e}")
@@ -301,7 +305,7 @@ with col1:
 
 with col2:
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔄 执行数据校准", type="primary", use_container_width=True, key="sync_btn"):
+    if st.button("🔄 执行数据校准", type="primary", width='stretch', key="sync_btn"):
         with st.spinner("正在同步绑定关系..."):
             result = sync_bindings_from_user_list()
 
@@ -375,7 +379,7 @@ try:
         st.markdown("---")
         col1, col2, col3 = st.columns([1, 1, 1])
         with col2:
-            if st.button("📤 导出用户列表", use_container_width=True):
+            if st.button("📤 导出用户列表", width='stretch'):
                 try:
                     export_path = export_processor.save_to_excel(
                         df_data,

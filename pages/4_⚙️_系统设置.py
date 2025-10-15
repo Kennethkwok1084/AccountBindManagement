@@ -5,10 +5,14 @@
 System Settings Page - Configuration & System Maintenance
 """
 
+import os
+
+# 使用轮询监视器避免 inotify 限制带来的崩溃
+os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
+
 import streamlit as st
 from datetime import datetime, date
 import sys
-import os
 import pandas as pd
 
 # 添加项目根目录到路径
@@ -121,15 +125,21 @@ with col_rules:
             display_rows.append({
                 '账号类型': rule['账号类型'],
                 '允许绑定': '是' if rule['允许绑定'] else '否',
-                '生命周期（月）': rule.get('生命周期月份') if rule.get('生命周期月份') is not None else '',
+                '生命周期（月）': rule.get('生命周期月份') if rule.get('生命周期月份') is not None else None,
                 '固定开始日期': rule.get('自定义开始日期') or '',
                 '固定结束日期': rule.get('自定义结束日期') or '',
                 '最近更新': rule.get('更新时间') or ''
             })
+        rules_df = pd.DataFrame(display_rows)
+        if '生命周期（月）' in rules_df.columns:
+            rules_df['生命周期（月）'] = pd.to_numeric(
+                rules_df['生命周期（月）'],
+                errors='coerce'
+            ).astype('Int64')
         st.dataframe(
-            pd.DataFrame(display_rows),
+            rules_df,
             hide_index=True,
-            use_container_width=True
+            width='stretch'
         )
     else:
         render_info_card(
@@ -214,7 +224,7 @@ with col_editor:
             custom_end_date = None
 
         apply_now = st.checkbox("保存后立即同步现有账号的生命周期", value=True)
-        save_rule = st.form_submit_button("💾 保存规则", type="primary", use_container_width=True)
+        save_rule = st.form_submit_button("💾 保存规则", type="primary", width='stretch')
 
     if save_rule:
         if not account_type_value:
@@ -251,7 +261,7 @@ with st.expander("🗑️ 删除账号类型规则"):
                 [rule['账号类型'] for rule in rules],
                 help="删除后该账号类型将恢复为默认规则"
             )
-            confirm_delete = st.form_submit_button("删除规则", use_container_width=True)
+            confirm_delete = st.form_submit_button("删除规则", width='stretch')
             if confirm_delete:
                 if AccountTypeRuleOperations.delete_rule(delete_target):
                     show_success_message(f"已删除账号类型 {delete_target} 的自定义规则")
@@ -282,7 +292,7 @@ with col1:
     else:
         show_warning_message("尚未执行过自动维护", "⚠️")
 
-    if st.button("🔧 立即执行维护任务", type="primary", use_container_width=True):
+    if st.button("🔧 立即执行维护任务", type="primary", width='stretch'):
         with st.spinner("正在执行系统维护..."):
             result = system_maintenance.run_daily_maintenance()
 
@@ -337,7 +347,7 @@ with col2:
     )
 
     # 手动释放过期绑定
-    if st.button("🔓 仅释放过期绑定", use_container_width=True):
+    if st.button("🔓 仅释放过期绑定", width='stretch'):
         with st.spinner("正在释放过期绑定..."):
             try:
                 released_count = MaintenanceOperations.auto_release_expired_bindings()
@@ -346,7 +356,7 @@ with col2:
                 show_error_message(f"操作失败: {e}")
 
     # 手动标记过期账号
-    if st.button("❌ 仅标记过期账号", use_container_width=True):
+    if st.button("❌ 仅标记过期账号", width='stretch'):
         with st.spinner("正在标记过期账号..."):
             try:
                 expired_count = MaintenanceOperations.auto_expire_lifecycle_ended()
@@ -419,7 +429,7 @@ with st.expander("⚠️ 数据库操作 - 请谨慎使用", expanded=False):
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("🗑️ 清除所有缴费记录", type="secondary", use_container_width=True):
+        if st.button("🗑️ 清除所有缴费记录", type="secondary", width='stretch'):
             if st.session_state.get('confirm_clear_payments', False):
                 try:
                     from database.models import db_manager
@@ -434,7 +444,7 @@ with st.expander("⚠️ 数据库操作 - 请谨慎使用", expanded=False):
                 show_warning_message("再次点击确认清除所有缴费记录")
 
     with col2:
-        if st.button("🔄 重置系统时间戳", type="secondary", use_container_width=True):
+        if st.button("🔄 重置系统时间戳", type="secondary", width='stretch'):
             try:
                 SystemSettingsOperations.set_setting('上次缴费导入时间', '1970-01-01 00:00:00')
                 SystemSettingsOperations.set_setting('上次用户列表导入时间', '1970-01-01 00:00:00')
@@ -446,7 +456,7 @@ with st.expander("⚠️ 数据库操作 - 请谨慎使用", expanded=False):
                 show_error_message(f"重置失败: {e}")
 
     # 清除用户列表
-    if st.button("🗑️ 清除用户列表数据", type="secondary", use_container_width=True):
+    if st.button("🗑️ 清除用户列表数据", type="secondary", width='stretch'):
         if st.session_state.get('confirm_clear_users', False):
             try:
                 from database.models import db_manager

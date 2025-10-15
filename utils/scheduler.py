@@ -34,11 +34,24 @@ class MaintenanceScheduler:
             logger.info("⏰ 开始执行自动维护任务...")
 
             # 执行维护任务
-            released_count, expired_count, subscription_expired_count, converted_count = \
-                MaintenanceOperations.run_daily_maintenance()
+            (released_count,
+             expired_count,
+             subscription_expired_count,
+             converted_count,
+             duplicate_group_count,
+             rebind_count,
+             cleared_count) = MaintenanceOperations.run_daily_maintenance()
 
-            logger.info(f"✅ 自动维护完成 - 释放:{released_count}, 过期:{expired_count}, "
-                       f"套餐过期:{subscription_expired_count}, 转换:{converted_count}")
+            logger.info(
+                "✅ 自动维护完成 - 释放:%s, 过期:%s, 套餐过期:%s, 转换:%s, 重复分组:%s, 换绑:%s, 清理:%s",
+                released_count,
+                expired_count,
+                subscription_expired_count,
+                converted_count,
+                duplicate_group_count,
+                rebind_count,
+                cleared_count
+            )
 
         except Exception as e:
             logger.error(f"❌ 自动维护任务执行失败: {e}", exc_info=True)

@@ -392,8 +392,13 @@ def render_action_card(title: str, description: str, button_text: str,
                    unsafe_allow_html=True)
 
     with col2:
-        clicked = st.button(button_text, key=button_key, type="primary",
-                           use_container_width=True, on_click=on_click)
+        clicked = st.button(
+            button_text,
+            key=button_key,
+            type="primary",
+            width='stretch',
+            on_click=on_click
+        )
 
     return clicked
 

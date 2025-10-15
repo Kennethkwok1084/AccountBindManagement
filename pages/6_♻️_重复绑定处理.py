@@ -5,10 +5,14 @@
 Duplicate Binding Resolution Page
 """
 
+import os
+
+# 使用轮询监视器避免 inotify 限制带来的崩溃
+os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
+
 import streamlit as st
 import pandas as pd
 import sys
-import os
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -144,4 +148,3 @@ else:
 
             if available_count == 0:
                 st.info("提示：补充账号库存后，可重新执行换绑操作。")
-

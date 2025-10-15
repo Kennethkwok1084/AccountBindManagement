@@ -5,10 +5,14 @@
 Binding Export Page - Payment Processing & Account Binding
 """
 
+import os
+
+# 使用轮询监视器避免 inotify 限制带来的崩溃
+os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
+
 import streamlit as st
 import pandas as pd
 import sys
-import os
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -151,7 +155,7 @@ with col1:
 
 with col2:
     if pending_count > 0:
-        if st.button("⚡ 开始处理所有待绑定任务", type="primary", use_container_width=True):
+        if st.button("⚡ 开始处理所有待绑定任务", type="primary", width='stretch'):
             with st.spinner("正在执行绑定任务，请稍候..."):
                 result = payment_processor_logic.process_pending_payments_and_generate_export()
 
@@ -167,7 +171,7 @@ with col2:
                             result['binding_data'],
                             columns=['学号', '移动账号']
                         )
-                        st.dataframe(binding_df, use_container_width=True)
+                        st.dataframe(binding_df, width='stretch')
 
                     st.rerun()
                 else:
@@ -251,7 +255,7 @@ try:
 
         if failed_df_data:
             df = pd.DataFrame(failed_df_data)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
 
         render_info_card(
             title="可能的失败原因",

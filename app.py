@@ -5,9 +5,13 @@
 Campus Network Account Management System - Dashboard
 """
 
+import os
+
+# 使用轮询监视器避免 inotify 限制带来的崩溃
+os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
+
 import streamlit as st
 import sys
-import os
 
 # 添加项目根目录到Python路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -276,7 +280,7 @@ try:
         col1, col2, col3 = st.columns([1, 1, 1])
 
         with col2:
-            if st.button("🔧 执行系统维护", type="primary", use_container_width=True):
+            if st.button("🔧 执行系统维护", type="primary", width='stretch'):
                 with st.spinner("正在执行系统维护..."):
                     maintenance_result = system_maintenance.run_daily_maintenance()
 
