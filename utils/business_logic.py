@@ -435,11 +435,15 @@ class PaymentProcessor:
         }
 
         try:
+            logger.info("开始处理待处理的缴费记录...")
+            
             # 获取待处理的缴费记录
             pending_payments = PaymentOperations.get_pending_payments()
+            logger.info(f"找到 {len(pending_payments)} 条待处理缴费记录")
 
             if not pending_payments:
                 result['message'] = "没有待处理的缴费记录"
+                logger.warning("没有待处理的缴费记录")
                 return result
 
             binding_pairs = []
@@ -503,21 +507,17 @@ class PaymentProcessor:
                             })
                             result['processed_count'] += 1
                         else:
-                            logger.warning(
-                                "账号更新失败，账号 %s、学号 %s",
-                                account['账号'],
-                                payment['学号']
-                            )
+                            error_msg = f"账号更新失败，账号 {account['账号']}、学号 {payment['学号']}"
+                            logger.warning(error_msg)
+                            print(f"⚠️ {error_msg}")
                             PaymentOperations.update_payment_status(
                                 payment['记录ID'], '处理失败'
                             )
                             result['failed_count'] += 1
                     else:
-                        logger.warning(
-                            "未找到可用账号，学号 %s、缴费金额 %.2f",
-                            payment['学号'],
-                            payment['缴费金额']
-                        )
+                        error_msg = f"未找到可用账号，学号 {payment['学号']}、缴费金额 {payment['缴费金额']:.2f}"
+                        logger.warning(error_msg)
+                        print(f"⚠️ {error_msg}")
                         # 没有可用账号
                         PaymentOperations.update_payment_status(
                             payment['记录ID'], '处理失败'
@@ -525,11 +525,9 @@ class PaymentProcessor:
                         result['failed_count'] += 1
 
                 except Exception as e:
-                    logger.exception(
-                        "处理缴费记录失败，学号 %s、缴费金额 %.2f",
-                        payment.get('学号'),
-                        payment.get('缴费金额', 0.0)
-                    )
+                    error_msg = f"处理缴费记录失败，学号 {payment.get('学号')}、缴费金额 {payment.get('缴费金额', 0.0):.2f}，错误: {str(e)}"
+                    logger.exception(error_msg)
+                    print(f"❌ {error_msg}")
                     PaymentOperations.update_payment_status(
                         payment['记录ID'], '处理失败'
                     )
@@ -539,22 +537,36 @@ class PaymentProcessor:
             if binding_pairs:
                 try:
                     export_filename = f'绑定导出_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+                    logger.info(f"开始生成导出文件: {export_filename}")
                     export_path = export_processor.create_binding_export_file(
                         binding_pairs, export_filename
                     )
                     result['export_file'] = export_path
                     result['binding_data'] = binding_pairs
+                    logger.info(f"导出文件生成成功: {export_path}")
                 except Exception as e:
-                    result['message'] += f"; 导出文件生成失败: {e}"
+                    error_msg = f"导出文件生成失败: {e}"
+                    logger.error(error_msg)
+                    print(f"❌ {error_msg}")
+                    result['message'] += f"; {error_msg}"
 
             result['success'] = result['processed_count'] > 0
             result['message'] = f"成功绑定 {result['processed_count']} 个账号"
+            
+            logger.info(f"处理完成: {result['message']}")
+            print(f"✅ {result['message']}")
 
             if result['failed_count'] > 0:
                 result['message'] += f"，{result['failed_count']} 个失败"
+                logger.warning(f"有 {result['failed_count']} 个绑定失败")
 
         except Exception as e:
-            result['message'] = f"处理失败: {e}"
+            error_msg = f"处理失败: {e}"
+            result['message'] = error_msg
+            logger.exception(error_msg)
+            print(f"❌ {error_msg}")
+            import traceback
+            traceback.print_exc()
 
         return result
 

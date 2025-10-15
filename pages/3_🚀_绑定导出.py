@@ -156,26 +156,59 @@ with col1:
 with col2:
     if pending_count > 0:
         if st.button("⚡ 开始处理所有待绑定任务", type="primary", width='stretch'):
-            with st.spinner("正在执行绑定任务，请稍候..."):
-                result = payment_processor_logic.process_pending_payments_and_generate_export()
+            try:
+                with st.spinner("正在执行绑定任务，请稍候..."):
+                    # 在处理前显示进度信息
+                    progress_placeholder = st.empty()
+                    progress_placeholder.info(f"🔄 正在处理 {pending_count} 条缴费记录...")
+                    
+                    result = payment_processor_logic.process_pending_payments_and_generate_export()
+                    
+                    progress_placeholder.empty()
 
-                if result['success']:
-                    show_success_message(result['message'], "🎉")
+                    if result['success']:
+                        show_success_message(result['message'], "🎉")
 
-                    # 显示绑定详情
-                    if result['binding_data']:
-                        st.write(f"📊 成功绑定了 {len(result['binding_data'])} 个账号:")
+                        # 显示绑定详情
+                        if result['binding_data']:
+                            st.write(f"📊 成功绑定了 {len(result['binding_data'])} 个账号:")
 
-                        # 显示绑定结果表格
-                        binding_df = pd.DataFrame(
-                            result['binding_data'],
-                            columns=['学号', '移动账号']
-                        )
-                        st.dataframe(binding_df, width='stretch')
+                            # 显示绑定结果表格（显示更多信息）
+                            binding_df_data = []
+                            for item in result['binding_data']:
+                                binding_df_data.append({
+                                    '学号': item.get('学号', ''),
+                                    '移动账号': item.get('移动账号', ''),
+                                    '套餐类型': item.get('套餐类型', ''),
+                                    '到期日期': item.get('到期日期', '')
+                                })
+                            
+                            binding_df = pd.DataFrame(binding_df_data)
+                            st.dataframe(binding_df, use_container_width=True)
+                            
+                            # 显示导出文件信息
+                            if result.get('export_file'):
+                                st.success(f"📁 导出文件已生成: {os.path.basename(result['export_file'])}")
 
-                    st.rerun()
-                else:
-                    show_error_message(result['message'])
+                        st.rerun()
+                    else:
+                        show_error_message(result['message'])
+                        
+                        # 显示详细的失败信息
+                        if result.get('failed_count', 0) > 0:
+                            st.warning(f"⚠️ 有 {result['failed_count']} 条记录处理失败")
+                        
+            except Exception as e:
+                # 捕获并显示所有异常
+                show_error_message(f"执行绑定任务时发生错误: {str(e)}")
+                st.error("详细错误信息：")
+                st.code(str(e))
+                
+                # 显示完整的堆栈跟踪
+                import traceback
+                with st.expander("查看完整错误堆栈"):
+                    st.code(traceback.format_exc())
+                    
     else:
         show_info_message("没有待处理的缴费记录，请先导入缴费数据", "📭")
 
