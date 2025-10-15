@@ -7,6 +7,7 @@ Database Operations
 
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any, Tuple
+from dateutil.relativedelta import relativedelta
 from .models import db_manager
 
 
@@ -77,10 +78,13 @@ class ISPAccountOperations:
     def get_available_accounts(limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取可用账号（未使用且未过期）"""
         query = '''
-            SELECT * FROM isp_accounts
-            WHERE 状态 = '未使用'
-            AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
-            ORDER BY 创建时间
+            SELECT ia.*
+            FROM isp_accounts ia
+            LEFT JOIN account_type_rules atr ON ia.账号类型 = atr.账号类型
+            WHERE ia.状态 = '未使用'
+              AND (ia.生命周期结束日期 IS NULL OR ia.生命周期结束日期 > date('now', 'localtime'))
+              AND COALESCE(atr.允许绑定, 1) = 1
+            ORDER BY ia.创建时间
         '''
 
         if limit:
@@ -128,14 +132,42 @@ class ISPAccountOperations:
     def release_account(账号: str) -> bool:
         """释放账号（清除绑定信息并同步用户列表）"""
         try:
-            account = ISPAccountOperations.get_account(账号)
-            success = ISPAccountOperations.update_account(
-                账号, 状态='未使用', 绑定的学号=None, 绑定的套餐到期日=None
-            )
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT 绑定的学号
+                    FROM isp_accounts
+                    WHERE 账号 = ?
+                    LIMIT 1
+                    ''',
+                    (账号,)
+                )
+                account_row = cursor.fetchone()
 
-            if success and account and account.get('绑定的学号'):
-                try:
-                    db_manager.execute_update(
+                if not account_row:
+                    return False
+
+                bound_student = account_row['绑定的学号']
+
+                cursor.execute(
+                    '''
+                    UPDATE isp_accounts
+                    SET 状态 = '未使用',
+                        绑定的学号 = NULL,
+                        绑定的套餐到期日 = NULL,
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 账号 = ?
+                    ''',
+                    (账号,)
+                )
+
+                if cursor.rowcount == 0:
+                    conn.commit()
+                    return False
+
+                if bound_student:
+                    cursor.execute(
                         '''
                         UPDATE user_list
                         SET 移动账号 = NULL,
@@ -143,12 +175,11 @@ class ISPAccountOperations:
                         WHERE 用户账号 = ?
                           AND 移动账号 = ?
                         ''',
-                        (account['绑定的学号'], 账号)
+                        (bound_student, 账号)
                     )
-                except Exception as inner_e:
-                    print(f"同步用户列表失败: {inner_e}")
 
-            return success
+                conn.commit()
+                return True
         except Exception as e:
             print(f"释放账号失败: {e}")
             return False
@@ -245,6 +276,124 @@ class SystemSettingsOperations:
         query = 'SELECT * FROM system_settings ORDER BY 配置项'
         return db_manager.execute_query(query)
 
+
+class AccountTypeRuleOperations:
+    """账号类型规则操作类"""
+
+    @staticmethod
+    def _normalize_rule(rule: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not rule:
+            return None
+        normalized = dict(rule)
+        normalized['允许绑定'] = bool(rule.get('允许绑定', 1))
+        return normalized
+
+    @staticmethod
+    def list_rules() -> List[Dict[str, Any]]:
+        """获取所有账号类型规则"""
+        query = 'SELECT * FROM account_type_rules ORDER BY 账号类型'
+        rules = db_manager.execute_query(query)
+        return [AccountTypeRuleOperations._normalize_rule(rule) for rule in rules]
+
+    @staticmethod
+    def get_rule(账号类型: str) -> Optional[Dict[str, Any]]:
+        """获取指定账号类型的规则"""
+        query = 'SELECT * FROM account_type_rules WHERE 账号类型 = ? LIMIT 1'
+        results = db_manager.execute_query(query, (账号类型,))
+        return AccountTypeRuleOperations._normalize_rule(results[0]) if results else None
+
+    @staticmethod
+    def upsert_rule(账号类型: str,
+                    允许绑定: bool,
+                    生命周期月份: Optional[int] = None,
+                    自定义开始日期: Optional[date] = None,
+                    自定义结束日期: Optional[date] = None) -> bool:
+        """新增或更新账号类型规则"""
+        try:
+            query = '''
+                INSERT INTO account_type_rules (
+                    账号类型, 允许绑定, 生命周期月份, 自定义开始日期, 自定义结束日期, 更新时间
+                )
+                VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))
+                ON CONFLICT(账号类型) DO UPDATE SET
+                    允许绑定 = excluded.允许绑定,
+                    生命周期月份 = excluded.生命周期月份,
+                    自定义开始日期 = excluded.自定义开始日期,
+                    自定义结束日期 = excluded.自定义结束日期,
+                    更新时间 = excluded.更新时间
+            '''
+            params = (
+                账号类型.strip(),
+                1 if 允许绑定 else 0,
+                生命周期月份,
+                自定义开始日期.strftime('%Y-%m-%d') if 自定义开始日期 else None,
+                自定义结束日期.strftime('%Y-%m-%d') if 自定义结束日期 else None
+            )
+            db_manager.execute_update(query, params)
+            return True
+        except Exception as e:
+            print(f"保存账号类型规则失败: {e}")
+            return False
+
+    @staticmethod
+    def delete_rule(账号类型: str) -> bool:
+        """删除账号类型规则"""
+        try:
+            query = 'DELETE FROM account_type_rules WHERE 账号类型 = ?'
+            db_manager.execute_update(query, (账号类型,))
+            return True
+        except Exception as e:
+            print(f"删除账号类型规则失败: {e}")
+            return False
+
+    @staticmethod
+    def is_binding_allowed(账号类型: Optional[str]) -> bool:
+        """判断指定账号类型是否允许绑定"""
+        if not 账号类型:
+            return True
+        rule = AccountTypeRuleOperations.get_rule(账号类型)
+        if not rule:
+            return True
+        return bool(rule.get('允许绑定', True))
+
+    @staticmethod
+    def calculate_lifecycle(账号类型: str,
+                           默认开始日期: Optional[date],
+                           默认结束日期: Optional[date]) -> Tuple[Optional[date], Optional[date]]:
+        """根据规则计算生命周期日期"""
+        rule = AccountTypeRuleOperations.get_rule(账号类型)
+        if not rule:
+            return 默认开始日期, 默认结束日期
+
+        start_date = 默认开始日期
+        end_date = 默认结束日期
+
+        custom_start = rule.get('自定义开始日期')
+        if custom_start:
+            try:
+                start_date = datetime.strptime(custom_start, '%Y-%m-%d').date()
+            except Exception:
+                pass
+
+        lifecycle_months = rule.get('生命周期月份')
+        if lifecycle_months is not None and start_date:
+            try:
+                months = int(lifecycle_months)
+                if months <= 0:
+                    end_date = start_date
+                else:
+                    end_date = start_date + relativedelta(months=months)
+            except Exception:
+                pass
+
+        custom_end = rule.get('自定义结束日期')
+        if custom_end:
+            try:
+                end_date = datetime.strptime(custom_end, '%Y-%m-%d').date()
+            except Exception:
+                pass
+
+        return start_date, end_date
 
 class MaintenanceOperations:
     """系统维护操作类"""
@@ -448,6 +597,10 @@ class MaintenanceOperations:
                         FROM isp_accounts
                         WHERE 状态 = '未使用'
                           AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
+                          AND COALESCE(
+                                (SELECT 允许绑定 FROM account_type_rules WHERE 账号类型 = isp_accounts.账号类型),
+                                1
+                          ) = 1
                         ORDER BY 创建时间, 账号
                         LIMIT 1
                         '''
@@ -593,6 +746,10 @@ class MaintenanceOperations:
                     FROM isp_accounts
                     WHERE 状态 = '未使用'
                       AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
+                      AND COALESCE(
+                            (SELECT 允许绑定 FROM account_type_rules WHERE 账号类型 = isp_accounts.账号类型),
+                            1
+                      ) = 1
                     ORDER BY 创建时间, 账号
                     LIMIT 1
                     '''

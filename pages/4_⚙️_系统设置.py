@@ -9,12 +9,13 @@ import streamlit as st
 from datetime import datetime, date
 import sys
 import os
+import pandas as pd
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.operations import SystemSettingsOperations, MaintenanceOperations
-from utils.business_logic import system_maintenance
+from database.operations import SystemSettingsOperations, MaintenanceOperations, AccountTypeRuleOperations
+from utils.business_logic import system_maintenance, AccountManager
 from ui_components import (
     apply_global_style,
     render_page_header,
@@ -106,6 +107,159 @@ with col2:
         icon="💡",
         color="success"
     )
+
+# ==================== 账号类型策略 ====================
+render_section_divider("🧩 账号类型策略")
+
+rules = AccountTypeRuleOperations.list_rules()
+col_rules, col_editor = st.columns([1.1, 1.4])
+
+with col_rules:
+    if rules:
+        display_rows = []
+        for rule in rules:
+            display_rows.append({
+                '账号类型': rule['账号类型'],
+                '允许绑定': '是' if rule['允许绑定'] else '否',
+                '生命周期（月）': rule.get('生命周期月份') if rule.get('生命周期月份') is not None else '',
+                '固定开始日期': rule.get('自定义开始日期') or '',
+                '固定结束日期': rule.get('自定义结束日期') or '',
+                '最近更新': rule.get('更新时间') or ''
+            })
+        st.dataframe(
+            pd.DataFrame(display_rows),
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        render_info_card(
+            title="规则说明",
+            content="当前未设置自定义规则，系统将默认允许所有账号类型绑定，生命周期依账号类型推导。",
+            icon="ℹ️",
+            color="info"
+        )
+
+with col_editor:
+    st.markdown("#### ✏️ 新增或更新规则")
+    rule_options = ["新建规则"] + [rule['账号类型'] for rule in rules]
+
+    with st.form("account_type_rule_form"):
+        selected_option = st.selectbox(
+            "选择账号类型",
+            rule_options,
+            help="选择已有类型进行编辑，或选择“新建规则”输入新的账号类型标识"
+        )
+
+        if selected_option == "新建规则":
+            account_type_value = st.text_input(
+                "账号类型标识",
+                placeholder="例如：202409 或 未知",
+                help="与导入表格中的账号类型字段保持一致"
+            ).strip()
+            existing_rule = None
+        else:
+            account_type_value = selected_option
+            existing_rule = AccountTypeRuleOperations.get_rule(account_type_value)
+
+        allow_binding = st.toggle(
+            "允许绑定",
+            value=(existing_rule['允许绑定'] if existing_rule else True),
+            help="关闭后，该类型账号不会参与自动绑定、换绑等需要可用账号的流程"
+        )
+
+        lifecycle_default = existing_rule.get('生命周期月份') if existing_rule else None
+        use_custom_lifecycle = st.toggle(
+            "自定义生命周期（月）",
+            value=(lifecycle_default is not None),
+            help="开启后按指定月数计算结束日期；关闭则使用账号类型默认逻辑"
+        )
+        lifecycle_months = st.number_input(
+            "生命周期（月）",
+            min_value=0,
+            max_value=120,
+            value=int(lifecycle_default if lifecycle_default is not None else 12),
+            step=1,
+            disabled=not use_custom_lifecycle,
+            help="设为0表示开始日当天到期"
+        )
+
+        start_default_str = existing_rule.get('自定义开始日期') if existing_rule else None
+        use_custom_start = st.toggle(
+            "指定固定开始日期",
+            value=bool(start_default_str),
+            help="适用于无法从账号类型推导开始日期的账号"
+        )
+        if use_custom_start:
+            try:
+                start_default = datetime.strptime(start_default_str, '%Y-%m-%d').date() if start_default_str else date.today()
+            except Exception:
+                start_default = date.today()
+            custom_start_date = st.date_input("固定开始日期", value=start_default)
+        else:
+            custom_start_date = None
+
+        end_default_str = existing_rule.get('自定义结束日期') if existing_rule else None
+        use_custom_end = st.toggle(
+            "指定固定结束日期",
+            value=bool(end_default_str),
+            help="开启后将覆盖生命周期（月）的计算结果"
+        )
+        if use_custom_end:
+            try:
+                end_default = datetime.strptime(end_default_str, '%Y-%m-%d').date() if end_default_str else date.today()
+            except Exception:
+                end_default = date.today()
+            custom_end_date = st.date_input("固定结束日期", value=end_default)
+        else:
+            custom_end_date = None
+
+        apply_now = st.checkbox("保存后立即同步现有账号的生命周期", value=True)
+        save_rule = st.form_submit_button("💾 保存规则", type="primary", use_container_width=True)
+
+    if save_rule:
+        if not account_type_value:
+            show_error_message("账号类型标识不能为空")
+        elif use_custom_start and use_custom_end and custom_start_date and custom_end_date and custom_start_date > custom_end_date:
+            show_error_message("固定开始日期不能晚于固定结束日期")
+        else:
+            lifecycle_value = int(lifecycle_months) if use_custom_lifecycle else None
+            success = AccountTypeRuleOperations.upsert_rule(
+                account_type_value,
+                allow_binding,
+                lifecycle_value,
+                custom_start_date,
+                custom_end_date
+            )
+            if success:
+                sync_message = ""
+                if apply_now:
+                    sync_result = AccountManager.recalculate_lifecycle_for_type(account_type_value)
+                    if sync_result['success']:
+                        sync_message = sync_result['message']
+                    else:
+                        show_warning_message(sync_result['message'])
+                show_success_message("规则已保存" + (f"：{sync_message}" if sync_message else ""))
+                st.rerun()
+            else:
+                show_error_message("保存失败，请检查日志")
+
+with st.expander("🗑️ 删除账号类型规则"):
+    if rules:
+        with st.form("delete_account_type_rule"):
+            delete_target = st.selectbox(
+                "选择要删除的账号类型",
+                [rule['账号类型'] for rule in rules],
+                help="删除后该账号类型将恢复为默认规则"
+            )
+            confirm_delete = st.form_submit_button("删除规则", use_container_width=True)
+            if confirm_delete:
+                if AccountTypeRuleOperations.delete_rule(delete_target):
+                    show_success_message(f"已删除账号类型 {delete_target} 的自定义规则")
+                    st.rerun()
+                else:
+                    show_error_message("删除失败，请检查日志")
+    else:
+        st.caption("暂无可删除的账号类型规则。设置规则后可在此处删除。")
 
 # ==================== 数据维护 ====================
 render_section_divider("🔧 数据维护")

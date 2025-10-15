@@ -8,6 +8,7 @@ Core Business Logic
 from datetime import datetime, date
 from typing import List, Dict, Tuple, Optional, Any
 import os
+import re
 
 # 导入数据库操作
 import sys
@@ -16,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.operations import (
     ISPAccountOperations, PaymentOperations, SystemSettingsOperations,
-    MaintenanceOperations
+    MaintenanceOperations, AccountTypeRuleOperations
 )
 
 # 导入Excel处理器
@@ -103,6 +104,13 @@ class AccountManager:
                         if zero_cost_expiry:
                             end_date = business_date_helper.get_zero_cost_account_expiry(zero_cost_expiry)
 
+                    # 应用账号类型规则
+                    start_date, end_date = AccountTypeRuleOperations.calculate_lifecycle(
+                        account_data['账号类型'],
+                        start_date,
+                        end_date
+                    )
+
                     # 状态处理逻辑
                     原始状态 = account_data['状态']
                     最终状态 = 原始状态
@@ -156,6 +164,7 @@ class AccountManager:
             'success': False,
             'message': '',
             'updated_count': 0,
+            'released_count': 0,
             'error_count': 0,
             'errors': []
         }
@@ -173,8 +182,22 @@ class AccountManager:
                 return result
 
             # 处理绑定数据
+            expired_package_pattern = re.compile(r'^(本科|专科)20\d{2}')
+
             for binding in binding_data:
                 try:
+                    package_label = binding.get('绑定资费组') or binding.get('绑定套餐')
+                    if package_label and expired_package_pattern.match(package_label):
+                        # 资费组标记为本科/专科202X，视为已到期，释放账号
+                        if ISPAccountOperations.release_account(binding['移动账号']):
+                            result['released_count'] += 1
+                        else:
+                            result['error_count'] += 1
+                            result['errors'].append(
+                                f"账号 {binding['移动账号']} 未找到可释放的绑定记录"
+                            )
+                        continue
+
                     # 查找对应的账号
                     account = ISPAccountOperations.get_account(binding['移动账号'])
 
@@ -200,11 +223,20 @@ class AccountManager:
                     result['error_count'] += 1
                     result['errors'].append(f"绑定记录处理异常: {e}")
 
-            result['success'] = result['updated_count'] > 0
-            result['message'] = f"成功同步 {result['updated_count']} 条绑定记录"
+            result['success'] = (result['updated_count'] + result['released_count']) > 0
+
+            message_parts = []
+            if result['updated_count'] > 0:
+                message_parts.append(f"成功同步 {result['updated_count']} 条绑定记录")
+            if result['released_count'] > 0:
+                message_parts.append(f"释放 {result['released_count']} 个已到期绑定")
+            if not message_parts:
+                message_parts.append("未同步新的绑定记录")
 
             if result['error_count'] > 0:
-                result['message'] += f"，{result['error_count']} 条失败"
+                message_parts.append(f"{result['error_count']} 条失败")
+
+            result['message'] = "，".join(message_parts)
 
             # 更新同步时间
             SystemSettingsOperations.set_setting(
@@ -214,6 +246,95 @@ class AccountManager:
 
         except Exception as e:
             result['message'] = f"同步失败: {e}"
+
+        return result
+
+    @staticmethod
+    def recalculate_lifecycle_for_type(account_type: str) -> Dict[str, Any]:
+        """根据规则重新计算指定账号类型的生命周期"""
+        result = {
+            'success': False,
+            'message': '',
+            'updated_count': 0
+        }
+
+        from datetime import datetime as _dt  # 避免与模块顶部命名冲突
+
+        def _coerce_date(value: Any) -> Optional[date]:
+            if value in (None, '', 'None'):
+                return None
+            if isinstance(value, date):
+                return value
+            try:
+                return _dt.strptime(str(value), '%Y-%m-%d').date()
+            except Exception:
+                return None
+
+        try:
+            accounts = ISPAccountOperations.search_accounts(账号类型=account_type)
+            if not accounts:
+                result['message'] = "未找到对应账号"
+                return result
+
+            zero_cost_expiry = None
+            if account_type == '0元账号':
+                zero_cost_setting = SystemSettingsOperations.get_setting('0元账号有效期')
+                if zero_cost_setting:
+                    zero_cost_expiry = business_date_helper.get_zero_cost_account_expiry(zero_cost_setting)
+
+            updated = 0
+            today = date.today()
+
+            for account in accounts:
+                base_start, base_end = date_calculator.parse_account_type_to_dates(account_type)
+
+                if base_start is None:
+                    base_start = _coerce_date(account.get('生命周期开始日期'))
+
+                if account_type == '0元账号' and zero_cost_expiry:
+                    base_end = zero_cost_expiry
+
+                if base_end is None:
+                    base_end = _coerce_date(account.get('生命周期结束日期'))
+
+                new_start, new_end = AccountTypeRuleOperations.calculate_lifecycle(
+                    account_type,
+                    base_start,
+                    base_end
+                )
+
+                binding_student = account.get('绑定的学号')
+                binding_expiry = _coerce_date(account.get('绑定的套餐到期日'))
+                new_status = account.get('状态', '未使用')
+
+                if new_end and new_end < today:
+                    if binding_student:
+                        if binding_expiry and binding_expiry >= today:
+                            new_status = '已过期但被绑定'
+                        else:
+                            new_status = '已过期'
+                    else:
+                        new_status = '已过期'
+                else:
+                    if binding_student:
+                        new_status = '已使用'
+                    else:
+                        new_status = '未使用'
+
+                ISPAccountOperations.update_account(
+                    account['账号'],
+                    生命周期开始日期=new_start,
+                    生命周期结束日期=new_end,
+                    状态=new_status
+                )
+
+                updated += 1
+
+            result['success'] = True
+            result['updated_count'] = updated
+            result['message'] = f"已更新 {updated} 个账号的生命周期"
+        except Exception as e:
+            result['message'] = f"更新失败: {e}"
 
         return result
 
