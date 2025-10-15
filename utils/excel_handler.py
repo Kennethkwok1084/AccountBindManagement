@@ -152,6 +152,7 @@ class BindingExcelProcessor(ExcelProcessor):
 
     def __init__(self):
         self.required_columns = ['用户账号', '移动账号', '到期日期']
+        self.optional_columns = ['绑定套餐', '绑定资费组']
 
     def process_binding_import(self, file_buffer) -> Tuple[List[Dict[str, Any]], List[str]]:
         """处理绑定详情Excel文件"""
@@ -176,7 +177,9 @@ class BindingExcelProcessor(ExcelProcessor):
                     binding_data = {
                         '用户账号': str(row['用户账号']).strip(),
                         '移动账号': 移动账号,
-                        '到期日期': self._parse_date(row['到期日期'])
+                        '到期日期': self._parse_date(row['到期日期']),
+                        '绑定套餐': str(row.get('绑定套餐', '')).strip(),
+                        '绑定资费组': str(row.get('绑定资费组', '')).strip()
                     }
 
                     processed_bindings.append(binding_data)

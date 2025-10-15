@@ -83,6 +83,18 @@ class DatabaseManager:
                 )
             ''')
 
+            # 创建账号类型规则表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS account_type_rules (
+                    账号类型 TEXT PRIMARY KEY,
+                    允许绑定 INTEGER NOT NULL DEFAULT 1,
+                    生命周期月份 INTEGER,
+                    自定义开始日期 DATE,
+                    自定义结束日期 DATE,
+                    更新时间 TIMESTAMP
+                )
+            ''')
+
             # 插入默认系统设置
             default_settings = [
                 ('上次缴费导入时间', '1970-01-01 00:00:00', '最后一次导入缴费记录的时间'),
