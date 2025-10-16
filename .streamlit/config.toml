@@ -1,8 +1,13 @@
 [server]
 headless = true
+enableWebsocketCompression = false
+maxUploadSize = 200
+enableCORS = false
+enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
+serverAddress = "localhost"
 
 [theme]
 primaryColor = "#1f77b4"

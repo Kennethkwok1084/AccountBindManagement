@@ -59,10 +59,16 @@ class MaintenanceScheduler:
     def start(self):
         """启动定时任务"""
         if self._is_running:
-            logger.warning("调度器已经在运行")
+            # 静默返回，不输出警告（避免日志污染）
             return
 
         try:
+            # 检查调度器是否已经在运行
+            if self.scheduler.running:
+                self._is_running = True
+                logger.debug("调度器已在运行状态")
+                return
+
             # 每天执行3次：早上8点、下午2点、晚上8点
             # Cron 表达式：分 时 日 月 周
             self.scheduler.add_job(

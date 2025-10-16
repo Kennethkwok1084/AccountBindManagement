@@ -461,53 +461,101 @@ class PaymentProcessor:
                     if available_accounts:
                         account = available_accounts[0]
 
-                        # 绑定账号到学生，并设置套餐到期日
-                        bind_success = ISPAccountOperations.update_account(
-                            account['账号'],
-                            状态='已使用',
-                            绑定的学号=payment['学号'],
-                            绑定的套餐到期日=到期日期
-                        )
-
-                        if bind_success:
-                            # 清理之前占用同一账号的用户记录，避免重复绑定
-                            from database.models import db_manager
-                            db_manager.execute_update(
-                                '''
-                                UPDATE user_list
-                                SET 移动账号 = NULL,
-                                    更新时间 = datetime('now', 'localtime')
-                                WHERE 移动账号 = ?
-                                  AND 用户账号 != ?
-                                ''',
-                                (account['账号'], payment['学号'])
-                            )
-
-                            # 更新用户列表：设置移动账号、套餐类型、到期日期
-                            db_manager.execute_update('''
-                                UPDATE user_list
-                                SET 移动账号 = ?, 联通账号 = NULL, 电信账号 = NULL,
-                                    绑定套餐 = ?, 到期日期 = ?,
-                                    更新时间 = datetime('now', 'localtime')
-                                WHERE 用户账号 = ?
-                            ''', (account['账号'], 套餐类型, 到期日期, payment['学号']))
-
-                            # 更新缴费记录状态
-                            PaymentOperations.update_payment_status(
-                                payment['记录ID'], '已处理'
-                            )
-
-                            # 添加到导出数据（包含套餐信息）
-                            binding_pairs.append({
-                                '学号': payment['学号'],
-                                '移动账号': account['账号'],
-                                '套餐类型': 套餐类型,
-                                '到期日期': 到期日期.strftime('%Y-%m-%d') if 到期日期 else '',
-                                '缴费金额': payment['缴费金额']
-                            })
-                            result['processed_count'] += 1
-                        else:
-                            error_msg = f"账号更新失败，账号 {account['账号']}、学号 {payment['学号']}"
+                        # 使用事务确保所有操作的原子性
+                        from database.models import db_manager
+                        
+                        try:
+                            with db_manager.get_connection() as conn:
+                                cursor = conn.cursor()
+                                
+                                # 开始事务
+                                cursor.execute("BEGIN TRANSACTION")
+                                
+                                try:
+                                    # 1. 检查用户是否存在于用户列表
+                                    cursor.execute(
+                                        'SELECT 用户账号 FROM user_list WHERE 用户账号 = ?',
+                                        (payment['学号'],)
+                                    )
+                                    user_exists = cursor.fetchone()
+                                    
+                                    if not user_exists:
+                                        raise Exception(f"学号 {payment['学号']} 不存在于用户列表中")
+                                    
+                                    # 2. 更新账号表 - 绑定账号到学生
+                                    cursor.execute(
+                                        '''
+                                        UPDATE isp_accounts
+                                        SET 状态 = '已使用',
+                                            绑定的学号 = ?,
+                                            绑定的套餐到期日 = ?,
+                                            更新时间 = datetime('now', 'localtime')
+                                        WHERE 账号 = ?
+                                        ''',
+                                        (payment['学号'], 到期日期, account['账号'])
+                                    )
+                                    
+                                    if cursor.rowcount == 0:
+                                        raise Exception(f"账号 {account['账号']} 更新失败")
+                                    
+                                    # 3. 清理之前占用同一账号的其他用户记录
+                                    cursor.execute(
+                                        '''
+                                        UPDATE user_list
+                                        SET 移动账号 = NULL,
+                                            更新时间 = datetime('now', 'localtime')
+                                        WHERE 移动账号 = ?
+                                          AND 用户账号 != ?
+                                        ''',
+                                        (account['账号'], payment['学号'])
+                                    )
+                                    
+                                    # 4. 更新用户列表 - 设置移动账号、套餐类型、到期日期
+                                    cursor.execute(
+                                        '''
+                                        UPDATE user_list
+                                        SET 移动账号 = ?, 联通账号 = NULL, 电信账号 = NULL,
+                                            绑定套餐 = ?, 到期日期 = ?,
+                                            更新时间 = datetime('now', 'localtime')
+                                        WHERE 用户账号 = ?
+                                        ''',
+                                        (account['账号'], 套餐类型, 到期日期, payment['学号'])
+                                    )
+                                    
+                                    if cursor.rowcount == 0:
+                                        raise Exception(f"学号 {payment['学号']} 用户列表更新失败")
+                                    
+                                    # 5. 更新缴费记录状态
+                                    cursor.execute(
+                                        '''
+                                        UPDATE payment_logs
+                                        SET 处理状态 = '已处理',
+                                            处理时间 = datetime('now', 'localtime')
+                                        WHERE 记录ID = ?
+                                        ''',
+                                        (payment['记录ID'],)
+                                    )
+                                    
+                                    # 提交事务
+                                    conn.commit()
+                                    
+                                    # 添加到导出数据
+                                    binding_pairs.append({
+                                        '学号': payment['学号'],
+                                        '移动账号': account['账号'],
+                                        '套餐类型': 套餐类型,
+                                        '到期日期': 到期日期.strftime('%Y-%m-%d') if 到期日期 else '',
+                                        '缴费金额': payment['缴费金额']
+                                    })
+                                    result['processed_count'] += 1
+                                    
+                                except Exception as tx_error:
+                                    # 回滚事务
+                                    conn.rollback()
+                                    raise tx_error
+                                    
+                        except Exception as e:
+                            error_msg = f"绑定失败，账号 {account['账号']}、学号 {payment['学号']}，原因: {str(e)}"
                             logger.warning(error_msg)
                             print(f"⚠️ {error_msg}")
                             PaymentOperations.update_payment_status(

@@ -6,15 +6,28 @@ Campus Network Account Management System - Dashboard
 """
 
 import os
+import warnings
+import logging
+import sys
+
+# 添加项目根目录到Python路径（在导入其他模块之前）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 使用轮询监视器避免 inotify 限制带来的崩溃
 os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
 
-import streamlit as st
-import sys
+# 导入并配置日志系统
+try:
+    from logging_config import setup_logging
+    setup_logging()
+except ImportError:
+    # 如果导入失败，使用基本配置
+    logging.getLogger('tornado').setLevel(logging.ERROR)
+    logging.getLogger('asyncio').setLevel(logging.ERROR)
+    warnings.filterwarnings('ignore', message='.*WebSocket.*')
+    warnings.filterwarnings('ignore', message='.*Stream is closed.*')
 
-# 添加项目根目录到Python路径
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import streamlit as st
 
 from utils.business_logic import system_maintenance, payment_processor_logic
 from database.models import get_db_stats
@@ -35,17 +48,25 @@ st.set_page_config(
 # 应用全局样式
 apply_global_style()
 
-# 启动定时任务调度器（仅在主线程启动一次）
+# 启动定时任务调度器（仅在主线程启动一次，使用锁防止竞态）
 if 'scheduler_started' not in st.session_state:
+    st.session_state.scheduler_started = False
+    st.session_state.scheduler_error = None
+
+if not st.session_state.scheduler_started:
     try:
         from utils.scheduler import start_scheduler, get_scheduler
-        start_scheduler()
+        # 只在未启动时启动
         scheduler = get_scheduler()
+        if not scheduler.is_running():
+            start_scheduler()
+            st.session_state.scheduler_next_run = scheduler.get_next_run_time()
         st.session_state.scheduler_started = True
-        st.session_state.scheduler_next_run = scheduler.get_next_run_time()
     except Exception as e:
-        st.session_state.scheduler_started = False
         st.session_state.scheduler_error = str(e)
+        # 不再抛出异常，只记录
+        import logging
+        logging.error(f"调度器启动失败: {e}")
 
 # 页面标题
 render_page_header(

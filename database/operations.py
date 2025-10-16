@@ -124,9 +124,81 @@ class ISPAccountOperations:
         return db_manager.execute_query(query, tuple(params))
 
     @staticmethod
-    def bind_account_to_student(账号: str, 学号: str) -> bool:
-        """绑定账号到学生"""
-        return ISPAccountOperations.update_account(账号, 状态='已使用', 绑定的学号=学号)
+    def bind_account_to_student(账号: str, 学号: str, 套餐到期日: Optional[date] = None) -> bool:
+        """
+        绑定账号到学生（事务安全）
+        确保账号表和用户表的数据一致性
+        """
+        try:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("BEGIN TRANSACTION")
+                
+                try:
+                    # 1. 检查用户是否存在于用户列表
+                    cursor.execute(
+                        'SELECT 用户账号 FROM user_list WHERE 用户账号 = ?',
+                        (学号,)
+                    )
+                    user_exists = cursor.fetchone()
+                    
+                    if not user_exists:
+                        raise Exception(f"学号 {学号} 不存在于用户列表中，无法绑定")
+                    
+                    # 2. 清理之前占用同一账号的其他用户记录（避免重复绑定）
+                    cursor.execute(
+                        '''
+                        UPDATE user_list
+                        SET 移动账号 = NULL,
+                            更新时间 = datetime('now', 'localtime')
+                        WHERE 移动账号 = ?
+                          AND 用户账号 != ?
+                        ''',
+                        (账号, 学号)
+                    )
+                    
+                    # 3. 更新账号表 - 绑定账号到学生
+                    cursor.execute(
+                        '''
+                        UPDATE isp_accounts
+                        SET 状态 = '已使用',
+                            绑定的学号 = ?,
+                            绑定的套餐到期日 = ?,
+                            更新时间 = datetime('now', 'localtime')
+                        WHERE 账号 = ?
+                        ''',
+                        (学号, 套餐到期日, 账号)
+                    )
+                    
+                    if cursor.rowcount == 0:
+                        raise Exception(f"账号 {账号} 更新失败，可能账号不存在")
+                    
+                    # 4. 更新用户列表 - 设置移动账号
+                    cursor.execute(
+                        '''
+                        UPDATE user_list
+                        SET 移动账号 = ?,
+                            更新时间 = datetime('now', 'localtime')
+                        WHERE 用户账号 = ?
+                        ''',
+                        (账号, 学号)
+                    )
+                    
+                    if cursor.rowcount == 0:
+                        raise Exception(f"用户列表更新失败，学号 {学号}")
+                    
+                    # 提交事务
+                    conn.commit()
+                    return True
+                    
+                except Exception as tx_error:
+                    # 回滚事务
+                    conn.rollback()
+                    raise tx_error
+                    
+        except Exception as e:
+            print(f"绑定账号失败: {e}")
+            return False
 
     @staticmethod
     def release_account(账号: str) -> bool:
@@ -517,133 +589,141 @@ class MaintenanceOperations:
 
         with db_manager.get_connection(enable_performance_mode=True) as conn:
             cursor = conn.cursor()
-            cursor.execute(duplicate_query)
-            duplicate_accounts = cursor.fetchall()
+            cursor.execute("BEGIN TRANSACTION")
+            
+            try:
+                cursor.execute(duplicate_query)
+                duplicate_accounts = cursor.fetchall()
 
-            if not duplicate_accounts:
-                return 0, 0, 0
+                if not duplicate_accounts:
+                    conn.commit()
+                    return 0, 0, 0
 
-            processed_groups = 0
-            rebind_count = 0
-            cleared_count = 0
+                processed_groups = 0
+                rebind_count = 0
+                cleared_count = 0
 
-            for row in duplicate_accounts:
-                mobile_account = row['移动账号']
-                if not mobile_account:
-                    continue
+                for row in duplicate_accounts:
+                    mobile_account = row['移动账号']
+                    if not mobile_account:
+                        continue
 
-                processed_groups += 1
+                    processed_groups += 1
 
-                cursor.execute(
-                    '''
-                    SELECT 用户账号, 到期日期, 更新时间
-                    FROM user_list
-                    WHERE 移动账号 = ?
-                    ORDER BY 更新时间 DESC
-                    ''',
-                    (mobile_account,)
-                )
-                user_entries = cursor.fetchall()
+                    cursor.execute(
+                        '''
+                        SELECT 用户账号, 到期日期, 更新时间
+                        FROM user_list
+                        WHERE 移动账号 = ?
+                        ORDER BY 更新时间 DESC
+                        ''',
+                        (mobile_account,)
+                    )
+                    user_entries = cursor.fetchall()
 
-                if not user_entries:
-                    continue
-
-                cursor.execute(
-                    '''
-                    SELECT 绑定的学号, 绑定的套餐到期日, 状态
-                    FROM isp_accounts
-                    WHERE 账号 = ?
-                    ''',
-                    (mobile_account,)
-                )
-                account_info = cursor.fetchone()
-
-                keeper_user = None
-                keeper_expiry = None
-                if account_info and account_info['绑定的学号']:
-                    keeper_user = account_info['绑定的学号']
-                    keeper_expiry = account_info['绑定的套餐到期日']
-
-                if keeper_user is None:
-                    keeper_user = user_entries[0]['用户账号']
-                    keeper_expiry = user_entries[0]['到期日期']
-
-                if keeper_expiry is None:
-                    for entry in user_entries:
-                        if entry['用户账号'] == keeper_user:
-                            keeper_expiry = entry['到期日期']
-                            break
-
-                # 确保原账号绑定保持一致
-                cursor.execute(
-                    '''
-                    UPDATE isp_accounts
-                    SET 绑定的学号 = ?,
-                        绑定的套餐到期日 = ?,
-                        状态 = CASE WHEN 状态 = '未使用' THEN '已使用' ELSE 状态 END,
-                        更新时间 = datetime('now', 'localtime')
-                    WHERE 账号 = ?
-                    ''',
-                    (keeper_user, keeper_expiry, mobile_account)
-                )
-
-                for entry in user_entries:
-                    if entry['用户账号'] == keeper_user:
+                    if not user_entries:
                         continue
 
                     cursor.execute(
                         '''
-                        SELECT 账号
+                        SELECT 绑定的学号, 绑定的套餐到期日, 状态
                         FROM isp_accounts
-                        WHERE 状态 = '未使用'
-                          AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
-                          AND COALESCE(
-                                (SELECT 允许绑定 FROM account_type_rules WHERE 账号类型 = isp_accounts.账号类型),
-                                1
-                          ) = 1
-                        ORDER BY 创建时间, 账号
-                        LIMIT 1
-                        '''
+                        WHERE 账号 = ?
+                        ''',
+                        (mobile_account,)
                     )
-                    replacement = cursor.fetchone()
+                    account_info = cursor.fetchone()
 
-                    if replacement:
-                        cursor.execute(
-                            '''
-                            UPDATE isp_accounts
-                            SET 状态 = '已使用',
-                                绑定的学号 = ?,
-                                绑定的套餐到期日 = ?,
-                                更新时间 = datetime('now', 'localtime')
-                            WHERE 账号 = ?
-                            ''',
-                            (entry['用户账号'], entry['到期日期'], replacement['账号'])
-                        )
-                        cursor.execute(
-                            '''
-                            UPDATE user_list
-                            SET 移动账号 = ?,
-                                更新时间 = datetime('now', 'localtime')
-                            WHERE 用户账号 = ?
-                            ''',
-                            (replacement['账号'], entry['用户账号'])
-                        )
-                        rebind_count += 1
-                    else:
-                        cursor.execute(
-                            '''
-                            UPDATE user_list
-                            SET 移动账号 = NULL,
-                                更新时间 = datetime('now', 'localtime')
-                            WHERE 用户账号 = ?
-                              AND 移动账号 = ?
-                            ''',
-                            (entry['用户账号'], mobile_account)
-                        )
-                        cleared_count += 1
+                    keeper_user = None
+                    keeper_expiry = None
+                    if account_info and account_info['绑定的学号']:
+                        keeper_user = account_info['绑定的学号']
+                        keeper_expiry = account_info['绑定的套餐到期日']
 
-            conn.commit()
-            return processed_groups, rebind_count, cleared_count
+                    if keeper_user is None:
+                        keeper_user = user_entries[0]['用户账号']
+                        keeper_expiry = user_entries[0]['到期日期']
+
+                    if keeper_expiry is None:
+                        for entry in user_entries:
+                            if entry['用户账号'] == keeper_user:
+                                keeper_expiry = entry['到期日期']
+                                break
+
+                    # 确保原账号绑定保持一致
+                    cursor.execute(
+                        '''
+                        UPDATE isp_accounts
+                        SET 绑定的学号 = ?,
+                            绑定的套餐到期日 = ?,
+                            状态 = CASE WHEN 状态 = '未使用' THEN '已使用' ELSE 状态 END,
+                            更新时间 = datetime('now', 'localtime')
+                        WHERE 账号 = ?
+                        ''',
+                        (keeper_user, keeper_expiry, mobile_account)
+                    )
+
+                    for entry in user_entries:
+                        if entry['用户账号'] == keeper_user:
+                            continue
+
+                        cursor.execute(
+                            '''
+                            SELECT 账号
+                            FROM isp_accounts
+                            WHERE 状态 = '未使用'
+                              AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
+                              AND COALESCE(
+                                    (SELECT 允许绑定 FROM account_type_rules WHERE 账号类型 = isp_accounts.账号类型),
+                                    1
+                              ) = 1
+                            ORDER BY 创建时间, 账号
+                            LIMIT 1
+                            '''
+                        )
+                        replacement = cursor.fetchone()
+
+                        if replacement:
+                            cursor.execute(
+                                '''
+                                UPDATE isp_accounts
+                                SET 状态 = '已使用',
+                                    绑定的学号 = ?,
+                                    绑定的套餐到期日 = ?,
+                                    更新时间 = datetime('now', 'localtime')
+                                WHERE 账号 = ?
+                                ''',
+                                (entry['用户账号'], entry['到期日期'], replacement['账号'])
+                            )
+                            cursor.execute(
+                                '''
+                                UPDATE user_list
+                                SET 移动账号 = ?,
+                                    更新时间 = datetime('now', 'localtime')
+                                WHERE 用户账号 = ?
+                                ''',
+                                (replacement['账号'], entry['用户账号'])
+                            )
+                            rebind_count += 1
+                        else:
+                            cursor.execute(
+                                '''
+                                UPDATE user_list
+                                SET 移动账号 = NULL,
+                                    更新时间 = datetime('now', 'localtime')
+                                WHERE 用户账号 = ?
+                                  AND 移动账号 = ?
+                                ''',
+                                (entry['用户账号'], mobile_account)
+                            )
+                            cleared_count += 1
+
+                conn.commit()
+                return processed_groups, rebind_count, cleared_count
+                
+            except Exception as e:
+                conn.rollback()
+                raise e
 
     @staticmethod
     def get_duplicate_mobile_bindings() -> List[Dict[str, Any]]:
@@ -850,6 +930,71 @@ class MaintenanceOperations:
             rebind_count,
             cleared_count
         )
+
+    @staticmethod
+    def fix_data_integrity_issues() -> Dict[str, int]:
+        """
+        修复数据完整性问题
+        - 孤立绑定：账号表显示已绑定但用户表中没有对应记录
+        - 无效未使用：未使用状态的账号却有绑定信息
+        - 无效已使用：已使用状态的账号却没有绑定信息
+        """
+        fixed_counts = {
+            '孤立绑定': 0,
+            '无效未使用': 0,
+            '无效已使用': 0
+        }
+        
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN TRANSACTION")
+            
+            try:
+                # 1. 修复孤立绑定 - 释放账号表中已绑定但用户表中没有记录的账号
+                cursor.execute('''
+                    UPDATE isp_accounts
+                    SET 状态 = '未使用',
+                        绑定的学号 = NULL,
+                        绑定的套餐到期日 = NULL,
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 状态 = '已使用' 
+                      AND 绑定的学号 IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM user_list ul 
+                          WHERE ul.移动账号 = isp_accounts.账号 
+                            AND ul.用户账号 = isp_accounts.绑定的学号
+                      )
+                ''')
+                fixed_counts['孤立绑定'] = cursor.rowcount
+                
+                # 2. 修复无效未使用 - 清除未使用账号的绑定信息
+                cursor.execute('''
+                    UPDATE isp_accounts
+                    SET 绑定的学号 = NULL,
+                        绑定的套餐到期日 = NULL,
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 状态 = '未使用'
+                      AND (绑定的学号 IS NOT NULL OR 绑定的套餐到期日 IS NOT NULL)
+                ''')
+                fixed_counts['无效未使用'] = cursor.rowcount
+                
+                # 3. 修复无效已使用 - 将已使用但无绑定信息的账号改为未使用
+                cursor.execute('''
+                    UPDATE isp_accounts
+                    SET 状态 = '未使用',
+                        更新时间 = datetime('now', 'localtime')
+                    WHERE 状态 = '已使用'
+                      AND 绑定的学号 IS NULL
+                ''')
+                fixed_counts['无效已使用'] = cursor.rowcount
+                
+                conn.commit()
+                return fixed_counts
+                
+            except Exception as e:
+                conn.rollback()
+                print(f"修复数据完整性失败: {e}")
+                raise e
 
 
 if __name__ == "__main__":
