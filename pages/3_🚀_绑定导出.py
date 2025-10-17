@@ -32,7 +32,8 @@ from ui_components import (
     show_info_message,
     show_warning_message,
     render_empty_state,
-    render_progress_card
+    render_progress_card,
+    ProgressTracker
 )
 
 st.set_page_config(
@@ -154,49 +155,81 @@ with col1:
     )
 
 with col2:
-    if pending_count > 0:
+    # 确保 pending_count 在作用域内可用
+    if 'pending_count' in locals() and pending_count > 0:
         if st.button("⚡ 开始处理所有待绑定任务", type="primary", width='stretch'):
             try:
-                with st.spinner("正在执行绑定任务，请稍候..."):
-                    # 在处理前显示进度信息
-                    progress_placeholder = st.empty()
-                    progress_placeholder.info(f"🔄 正在处理 {pending_count} 条缴费记录...")
+                # 创建进度追踪器容器
+                progress_container = st.container()
+                
+                with progress_container:
+                    tracker = ProgressTracker(
+                        total=pending_count,
+                        title="绑定任务处理",
+                        show_eta=True
+                    )
                     
-                    result = payment_processor_logic.process_pending_payments_and_generate_export()
+                    # 定义进度回调函数
+                    def update_progress(info):
+                        tracker.update(
+                            current=info.get('current', 0),
+                            message=info.get('message', ''),
+                            success_count=info.get('success', 0),
+                            failed_count=info.get('failed', 0),
+                            step=info.get('step', '')
+                        )
                     
-                    progress_placeholder.empty()
-
+                    # 执行绑定任务并传递进度回调
+                    result = payment_processor_logic.process_pending_payments_and_generate_export(
+                        progress_callback=update_progress
+                    )
+                    
+                    # 标记完成
                     if result['success']:
-                        show_success_message(result['message'], "🎉")
-
-                        # 显示绑定详情
-                        if result['binding_data']:
-                            st.write(f"📊 成功绑定了 {len(result['binding_data'])} 个账号:")
-
-                            # 显示绑定结果表格（显示更多信息）
-                            binding_df_data = []
-                            for item in result['binding_data']:
-                                binding_df_data.append({
-                                    '学号': item.get('学号', ''),
-                                    '移动账号': item.get('移动账号', ''),
-                                    '套餐类型': item.get('套餐类型', ''),
-                                    '到期日期': item.get('到期日期', '')
-                                })
-                            
-                            binding_df = pd.DataFrame(binding_df_data)
-                            st.dataframe(binding_df, use_container_width=True)
-                            
-                            # 显示导出文件信息
-                            if result.get('export_file'):
-                                st.success(f"📁 导出文件已生成: {os.path.basename(result['export_file'])}")
-
-                        st.rerun()
+                        tracker.complete(
+                            success_count=result['processed_count'],
+                            failed_count=result['failed_count'],
+                            message=result['message']
+                        )
                     else:
-                        show_error_message(result['message'])
+                        tracker.error(result['message'])
+                
+                # 显示处理结果
+                if result['success']:
+                    # 显示成功消息
+                    show_success_message(result['message'], "🎉")
+                    
+                    # 显示绑定详情
+                    if result['binding_data']:
+                        st.write(f"📊 成功绑定了 {len(result['binding_data'])} 个账号:")
                         
-                        # 显示详细的失败信息
-                        if result.get('failed_count', 0) > 0:
-                            st.warning(f"⚠️ 有 {result['failed_count']} 条记录处理失败")
+                        # 显示绑定结果表格（显示更多信息）
+                        binding_df_data = []
+                        for item in result['binding_data']:
+                            binding_df_data.append({
+                                '学号': item.get('学号', ''),
+                                '移动账号': item.get('移动账号', ''),
+                                '套餐类型': item.get('套餐类型', ''),
+                                '到期日期': item.get('到期日期', '')
+                            })
+                        
+                        binding_df = pd.DataFrame(binding_df_data)
+                        st.dataframe(binding_df, use_container_width=True)
+                        
+                        # 显示导出文件信息
+                        if result.get('export_file'):
+                            st.success(f"📁 导出文件已生成: {os.path.basename(result['export_file'])}")
+                    
+                    # 等待用户确认后再刷新页面
+                    st.info("💡 所有操作已完成并保存到数据库")
+                    if st.button("🔄 刷新页面查看最新数据", type="primary"):
+                        st.rerun()
+                else:
+                    show_error_message(result['message'])
+                    
+                    # 显示详细的失败信息
+                    if result.get('failed_count', 0) > 0:
+                        st.warning(f"⚠️ 有 {result['failed_count']} 条记录处理失败")
                         
             except Exception as e:
                 # 捕获并显示所有异常

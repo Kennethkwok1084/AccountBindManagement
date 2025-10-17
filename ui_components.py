@@ -571,3 +571,202 @@ def render_empty_state(message: str, suggestions: Optional[List[str]] = None, ic
         st.markdown("**💡 建议：**")
         for suggestion in suggestions:
             st.markdown(f"- {suggestion}")
+
+
+# ==================== 进度条组件 ====================
+
+import time
+from datetime import datetime as dt
+
+
+class ProgressTracker:
+    """
+    进度追踪器 - 用于管理和更新长时间运行任务的进度
+    
+    使用示例:
+        tracker = ProgressTracker(total=100, title="处理账号")
+        for i, item in enumerate(items):
+            # 处理逻辑
+            tracker.update(
+                current=i+1,
+                message=f"正在处理: {item}",
+                success_count=success,
+                failed_count=failed
+            )
+    """
+    
+    def __init__(self, total: int, title: str = "处理进度", show_eta: bool = True):
+        """
+        初始化进度追踪器
+        
+        Args:
+            total: 总任务数
+            title: 标题
+            show_eta: 是否显示预估剩余时间
+        """
+        self.total = total
+        self.title = title
+        self.show_eta = show_eta
+        self.start_time = time.time()
+        self.last_update_time = self.start_time
+        
+        # 创建UI组件
+        self.title_container = st.empty()
+        self.progress_bar = st.progress(0.0)
+        self.status_container = st.empty()
+        self.stats_container = st.empty()
+        
+        # 更新频率控制（避免更新过于频繁）
+        self.update_interval = 0.1  # 最少间隔0.1秒
+        
+    def update(self, current: int, message: str = "", success_count: int = 0, 
+               failed_count: int = 0, step: str = ""):
+        """
+        更新进度
+        
+        Args:
+            current: 当前已完成数量
+            message: 状态消息
+            success_count: 成功计数
+            failed_count: 失败计数
+            step: 当前步骤描述
+        """
+        # 频率控制 - 避免更新过于频繁影响性能
+        current_time = time.time()
+        if current < self.total and (current_time - self.last_update_time) < self.update_interval:
+            return
+        
+        self.last_update_time = current_time
+        
+        # 计算进度
+        progress = min(current / self.total, 1.0) if self.total > 0 else 0.0
+        
+        # 更新进度条
+        self.progress_bar.progress(progress)
+        
+        # 更新标题
+        percentage = progress * 100
+        self.title_container.markdown(f"### {self.title} - {percentage:.1f}%")
+        
+        # 计算预估剩余时间
+        eta_text = ""
+        if self.show_eta and current > 0 and current < self.total:
+            elapsed = current_time - self.start_time
+            avg_time_per_item = elapsed / current
+            remaining_items = self.total - current
+            eta_seconds = avg_time_per_item * remaining_items
+            
+            if eta_seconds < 60:
+                eta_text = f"⏱️ 预计剩余: 约 {int(eta_seconds)} 秒"
+            elif eta_seconds < 3600:
+                eta_text = f"⏱️ 预计剩余: 约 {int(eta_seconds / 60)} 分钟"
+            else:
+                eta_text = f"⏱️ 预计剩余: 约 {eta_seconds / 3600:.1f} 小时"
+        
+        # 更新状态消息
+        status_parts = []
+        if step:
+            status_parts.append(f"🔄 **当前步骤:** {step}")
+        if message:
+            status_parts.append(f"💬 {message}")
+        
+        status_parts.append(f"📊 **进度:** {current} / {self.total}")
+        
+        if eta_text:
+            status_parts.append(eta_text)
+        
+        self.status_container.markdown("  \n".join(status_parts))
+        
+        # 更新统计信息
+        if success_count > 0 or failed_count > 0:
+            stats_cols = st.columns(3)
+            with self.stats_container.container():
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("✅ 成功", success_count)
+                with col2:
+                    st.metric("❌ 失败", failed_count)
+                with col3:
+                    processing = current - success_count - failed_count
+                    st.metric("🔄 处理中", max(0, processing))
+    
+    def complete(self, success_count: int = 0, failed_count: int = 0, message: str = "处理完成"):
+        """
+        标记任务完成
+        
+        Args:
+            success_count: 成功计数
+            failed_count: 失败计数
+            message: 完成消息
+        """
+        self.progress_bar.progress(1.0)
+        
+        elapsed = time.time() - self.start_time
+        if elapsed < 60:
+            time_text = f"{elapsed:.1f} 秒"
+        else:
+            time_text = f"{elapsed / 60:.1f} 分钟"
+        
+        self.title_container.markdown(f"### ✅ {self.title} - 完成")
+        self.status_container.success(f"🎉 {message} (用时: {time_text})")
+        
+        if success_count > 0 or failed_count > 0:
+            with self.stats_container.container():
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("✅ 成功", success_count)
+                with col2:
+                    st.metric("❌ 失败", failed_count)
+                with col3:
+                    total_processed = success_count + failed_count
+                    success_rate = (success_count / total_processed * 100) if total_processed > 0 else 0
+                    st.metric("📈 成功率", f"{success_rate:.1f}%")
+    
+    def error(self, message: str):
+        """
+        标记任务出错
+        
+        Args:
+            message: 错误消息
+        """
+        self.title_container.markdown(f"### ❌ {self.title} - 错误")
+        self.status_container.error(f"💥 {message}")
+
+
+def render_progress_bar_with_stats(current: int, total: int, title: str = "处理进度",
+                                   message: str = "", success_count: int = 0,
+                                   failed_count: int = 0, icon: str = "📊") -> None:
+    """
+    渲染带统计信息的进度条（静态版本，适合简单场景）
+    
+    对于需要动态更新的场景，建议使用 ProgressTracker 类
+    
+    Args:
+        current: 当前进度
+        total: 总数
+        title: 标题
+        message: 状态消息
+        success_count: 成功计数
+        failed_count: 失败计数
+        icon: 图标
+    """
+    progress = min(current / total, 1.0) if total > 0 else 0.0
+    percentage = progress * 100
+    
+    # 标题和进度条
+    st.markdown(f"### {icon} {title}")
+    st.progress(progress)
+    
+    # 进度信息
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.markdown(f"**进度:** {current} / {total} ({percentage:.1f}%)")
+        if message:
+            st.markdown(f"💬 {message}")
+    
+    with col2:
+        if success_count > 0 or failed_count > 0:
+            st.markdown(f"✅ 成功: {success_count}")
+            st.markdown(f"❌ 失败: {failed_count}")
+    
+    st.markdown("---")

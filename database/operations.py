@@ -5,37 +5,278 @@
 Database Operations
 """
 
+import json
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any, Tuple
 from dateutil.relativedelta import relativedelta
 from .models import db_manager
 
 
+class OperationLogOperations:
+    """操作日志表操作类"""
+
+    @staticmethod
+    def log_operation(操作类型: str,
+                      操作人: str = '系统自动',
+                      操作详情: Optional[Dict[str, Any]] = None,
+                      影响记录数: Optional[int] = None,
+                      执行状态: str = '成功',
+                      备注: Optional[str] = None) -> Optional[int]:
+        """记录操作日志"""
+        try:
+            details_json = (
+                json.dumps(操作详情, ensure_ascii=False)
+                if 操作详情 is not None else None
+            )
+            query = '''
+                INSERT INTO operation_logs (
+                    操作类型, 操作人, 操作详情, 影响记录数, 执行状态, 备注, 操作时间
+                ) VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+            '''
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (
+                    操作类型,
+                    操作人,
+                    details_json,
+                    影响记录数,
+                    执行状态,
+                    备注
+                ))
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as exc:
+            print(f"记录操作日志失败: {exc}")
+            return None
+
+    @staticmethod
+    def get_recent_logs(limit: int = 100) -> List[Dict[str, Any]]:
+        """获取最近的操作日志"""
+        query = '''
+            SELECT * FROM operation_logs
+            ORDER BY 操作时间 DESC
+            LIMIT ?
+        '''
+        return db_manager.execute_query(query, (limit,))
+
+    @staticmethod
+    def update_operation_log(operation_id: int,
+                             操作详情: Optional[Dict[str, Any]] = None,
+                             影响记录数: Optional[int] = None,
+                             执行状态: Optional[str] = None,
+                             备注: Optional[str] = None) -> bool:
+        """更新已存在的操作日志"""
+        set_clauses = []
+        params: List[Any] = []
+
+        if 操作详情 is not None:
+            set_clauses.append("操作详情 = ?")
+            params.append(json.dumps(操作详情, ensure_ascii=False))
+        if 影响记录数 is not None:
+            set_clauses.append("影响记录数 = ?")
+            params.append(影响记录数)
+        if 执行状态 is not None:
+            set_clauses.append("执行状态 = ?")
+            params.append(执行状态)
+        if 备注 is not None:
+            set_clauses.append("备注 = ?")
+            params.append(备注)
+
+        if not set_clauses:
+            return False
+
+        set_clauses.append("操作时间 = datetime('now', 'localtime')")
+        params.append(operation_id)
+
+        query = f'''
+            UPDATE operation_logs
+            SET {', '.join(set_clauses)}
+            WHERE id = ?
+        '''
+        try:
+            affected = db_manager.execute_update(query, tuple(params))
+            return affected > 0
+        except Exception as exc:
+            print(f"更新操作日志失败: {exc}")
+            return False
+
+
+class AccountChangeLogOperations:
+    """账号变更日志操作类"""
+
+    @staticmethod
+    def _normalize_value(value: Any) -> Optional[str]:
+        """统一转换存储的值"""
+        if value is None:
+            return None
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        return str(value)
+
+    @staticmethod
+    def _should_log_change(old_value: Any, new_value: Any) -> bool:
+        """判断是否需要记录变更"""
+        return AccountChangeLogOperations._normalize_value(old_value) != \
+            AccountChangeLogOperations._normalize_value(new_value)
+
+    @staticmethod
+    def log_account_change(账号: str,
+                           变更类型: str,
+                           变更字段: str,
+                           旧值: Any,
+                           新值: Any,
+                           关联学号: Optional[str] = None,
+                           操作来源: str = '手动操作',
+                           操作批次ID: Optional[int] = None,
+                           备注: Optional[str] = None) -> None:
+        """记录账号变更日志"""
+        if not AccountChangeLogOperations._should_log_change(旧值, 新值):
+            return
+
+        query = '''
+            INSERT INTO account_change_logs (
+                账号, 变更类型, 变更字段, 旧值, 新值,
+                关联学号, 操作来源, 操作批次ID, 备注, 变更时间
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+        '''
+        db_manager.execute_update(query, (
+            账号,
+            变更类型,
+            变更字段,
+            AccountChangeLogOperations._normalize_value(旧值),
+            AccountChangeLogOperations._normalize_value(新值),
+            关联学号,
+            操作来源,
+            操作批次ID,
+            备注
+        ))
+
+    @staticmethod
+    def log_multiple_changes(账号: str,
+                             changes: List[Dict[str, Any]],
+                             关联学号: Optional[str] = None,
+                             操作来源: str = '手动操作',
+                             操作批次ID: Optional[int] = None,
+                             备注: Optional[str] = None) -> None:
+        """批量记录同一账号的多个字段变更"""
+        for change in changes:
+            AccountChangeLogOperations.log_account_change(
+                账号=账号,
+                变更类型=change.get('变更类型', '更新'),
+                变更字段=change.get('变更字段', ''),
+                旧值=change.get('旧值'),
+                新值=change.get('新值'),
+                关联学号=关联学号,
+                操作来源=操作来源,
+                操作批次ID=操作批次ID,
+                备注=备注
+            )
+
+    @staticmethod
+    def get_account_history(账号: str) -> List[Dict[str, Any]]:
+        """查询账号的完整变更历史"""
+        query = '''
+            SELECT *
+            FROM account_change_logs
+            WHERE 账号 = ?
+            ORDER BY 变更时间 DESC, id DESC
+        '''
+        return db_manager.execute_query(query, (账号,))
+
+    @staticmethod
+    def get_student_related_changes(学号: str) -> List[Dict[str, Any]]:
+        """查询与学号相关的账号变更"""
+        query = '''
+            SELECT *
+            FROM account_change_logs
+            WHERE 关联学号 = ?
+            ORDER BY 变更时间 DESC, id DESC
+        '''
+        return db_manager.execute_query(query, (学号,))
+
+    @staticmethod
+    def get_changes_by_time_range(开始时间: datetime,
+                                  结束时间: datetime) -> List[Dict[str, Any]]:
+        """按时间范围查询变更"""
+        query = '''
+            SELECT *
+            FROM account_change_logs
+            WHERE 变更时间 BETWEEN ? AND ?
+            ORDER BY 变更时间 DESC, id DESC
+        '''
+        return db_manager.execute_query(
+            query,
+            (
+                开始时间.strftime('%Y-%m-%d %H:%M:%S'),
+                结束时间.strftime('%Y-%m-%d %H:%M:%S')
+            )
+        )
+
+    @staticmethod
+    def get_changes_by_operation(operation_id: int) -> List[Dict[str, Any]]:
+        """按操作批次查询变更记录"""
+        query = '''
+            SELECT *
+            FROM account_change_logs
+            WHERE 操作批次ID = ?
+            ORDER BY 变更时间 DESC, id DESC
+        '''
+        return db_manager.execute_query(query, (operation_id,))
+
+
 class ISPAccountOperations:
     """上网账号表操作类"""
 
     @staticmethod
-    def create_account(账号: str, 账号类型: str, 状态: str = '未使用',
+    def create_account(账号: str,
+                      账号类型: str,
+                      状态: str = '未使用',
                       生命周期开始日期: Optional[date] = None,
-                      生命周期结束日期: Optional[date] = None) -> bool:
+                      生命周期结束日期: Optional[date] = None,
+                      log_context: Optional[Dict[str, Any]] = None) -> bool:
         """创建新账号"""
         try:
             query = '''
                 INSERT INTO isp_accounts (账号, 账号类型, 状态, 生命周期开始日期, 生命周期结束日期, 创建时间, 更新时间)
                 VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
             '''
-            db_manager.execute_update(query, (
+            affected = db_manager.execute_update(query, (
                 账号, 账号类型, 状态, 生命周期开始日期, 生命周期结束日期
             ))
-            return True
+            if affected > 0:
+                snapshot = {
+                    '账号类型': 账号类型,
+                    '状态': 状态,
+                    '生命周期开始日期': 生命周期开始日期,
+                    '生命周期结束日期': 生命周期结束日期
+                }
+                context = log_context or {}
+                AccountChangeLogOperations.log_account_change(
+                    账号=账号,
+                    变更类型='创建',
+                    变更字段='全部',
+                    旧值=None,
+                    新值=json.dumps(snapshot, ensure_ascii=False),
+                    关联学号=context.get('关联学号'),
+                    操作来源=context.get('操作来源', '账号创建'),
+                    操作批次ID=context.get('操作批次ID'),
+                    备注=context.get('备注')
+                )
+            return affected > 0
         except Exception as e:
             print(f"创建账号失败: {e}")
             return False
 
     @staticmethod
-    def update_account(账号: str, **kwargs) -> bool:
+    def update_account(账号: str,
+                      log_context: Optional[Dict[str, Any]] = None,
+                      **kwargs) -> bool:
         """更新账号信息"""
         try:
+            old_account = ISPAccountOperations.get_account(账号)
+            if not old_account:
+                return False
+
             # 构建动态更新语句
             set_clauses = []
             params = []
@@ -55,6 +296,26 @@ class ISPAccountOperations:
             '''
 
             affected_rows = db_manager.execute_update(query, tuple(params))
+            if affected_rows > 0:
+                context = log_context or {}
+                new_student = kwargs.get('绑定的学号')
+                base_student = context.get('关联学号')
+                related_student = base_student if base_student is not None else (
+                    new_student if new_student is not None else old_account.get('绑定的学号')
+                )
+
+                for field, new_value in kwargs.items():
+                    AccountChangeLogOperations.log_account_change(
+                        账号=账号,
+                        变更类型='更新',
+                        变更字段=field,
+                        旧值=old_account.get(field),
+                        新值=new_value,
+                        关联学号=related_student,
+                        操作来源=context.get('操作来源', '直接更新'),
+                        操作批次ID=context.get('操作批次ID'),
+                        备注=context.get('备注')
+                    )
             return affected_rows > 0
         except Exception as e:
             print(f"更新账号失败: {e}")
@@ -124,7 +385,10 @@ class ISPAccountOperations:
         return db_manager.execute_query(query, tuple(params))
 
     @staticmethod
-    def bind_account_to_student(账号: str, 学号: str, 套餐到期日: Optional[date] = None) -> bool:
+    def bind_account_to_student(账号: str,
+                               学号: str,
+                               套餐到期日: Optional[date] = None,
+                               log_context: Optional[Dict[str, Any]] = None) -> bool:
         """
         绑定账号到学生（事务安全）
         确保账号表和用户表的数据一致性
@@ -132,9 +396,22 @@ class ISPAccountOperations:
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("BEGIN TRANSACTION")
                 
                 try:
+                    cursor.execute(
+                        '''
+                        SELECT 状态, 绑定的学号, 绑定的套餐到期日
+                        FROM isp_accounts
+                        WHERE 账号 = ?
+                        LIMIT 1
+                        ''',
+                        (账号,)
+                    )
+                    account_record = cursor.fetchone()
+                    if not account_record:
+                        raise Exception(f"账号 {账号} 不存在，无法绑定")
+                    old_account = dict(account_record)
+
                     # 1. 检查用户是否存在于用户列表
                     cursor.execute(
                         'SELECT 用户账号 FROM user_list WHERE 用户账号 = ?',
@@ -189,6 +466,35 @@ class ISPAccountOperations:
                     
                     # 提交事务
                     conn.commit()
+                    context = log_context or {}
+                    changes = [
+                        {
+                            '变更类型': '状态变更',
+                            '变更字段': '状态',
+                            '旧值': old_account.get('状态'),
+                            '新值': '已使用'
+                        },
+                        {
+                            '变更类型': '绑定',
+                            '变更字段': '绑定的学号',
+                            '旧值': old_account.get('绑定的学号'),
+                            '新值': 学号
+                        },
+                        {
+                            '变更类型': '绑定',
+                            '变更字段': '绑定的套餐到期日',
+                            '旧值': old_account.get('绑定的套餐到期日'),
+                            '新值': 套餐到期日
+                        }
+                    ]
+                    AccountChangeLogOperations.log_multiple_changes(
+                        账号=账号,
+                        changes=changes,
+                        关联学号=context.get('关联学号', 学号),
+                        操作来源=context.get('操作来源', '缴费绑定'),
+                        操作批次ID=context.get('操作批次ID'),
+                        备注=context.get('备注')
+                    )
                     return True
                     
                 except Exception as tx_error:
@@ -201,14 +507,15 @@ class ISPAccountOperations:
             return False
 
     @staticmethod
-    def release_account(账号: str) -> bool:
+    def release_account(账号: str,
+                       log_context: Optional[Dict[str, Any]] = None) -> bool:
         """释放账号（清除绑定信息并同步用户列表）"""
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     '''
-                    SELECT 绑定的学号
+                    SELECT 状态, 绑定的学号, 绑定的套餐到期日
                     FROM isp_accounts
                     WHERE 账号 = ?
                     LIMIT 1
@@ -220,7 +527,8 @@ class ISPAccountOperations:
                 if not account_row:
                     return False
 
-                bound_student = account_row['绑定的学号']
+                old_account = dict(account_row)
+                bound_student = old_account.get('绑定的学号')
 
                 cursor.execute(
                     '''
@@ -248,9 +556,38 @@ class ISPAccountOperations:
                           AND 移动账号 = ?
                         ''',
                         (bound_student, 账号)
-                    )
+                )
 
                 conn.commit()
+                context = log_context or {}
+                changes = [
+                    {
+                        '变更类型': '解绑',
+                        '变更字段': '状态',
+                        '旧值': old_account.get('状态'),
+                        '新值': '未使用'
+                    },
+                    {
+                        '变更类型': '解绑',
+                        '变更字段': '绑定的学号',
+                        '旧值': old_account.get('绑定的学号'),
+                        '新值': None
+                    },
+                    {
+                        '变更类型': '解绑',
+                        '变更字段': '绑定的套餐到期日',
+                        '旧值': old_account.get('绑定的套餐到期日'),
+                        '新值': None
+                    }
+                ]
+                AccountChangeLogOperations.log_multiple_changes(
+                    账号=账号,
+                    changes=changes,
+                    关联学号=context.get('关联学号', bound_student),
+                    操作来源=context.get('操作来源', '系统维护'),
+                    操作批次ID=context.get('操作批次ID'),
+                    备注=context.get('备注')
+                )
                 return True
         except Exception as e:
             print(f"释放账号失败: {e}")
@@ -259,7 +596,11 @@ class ISPAccountOperations:
     @staticmethod
     def expire_account(账号: str) -> bool:
         """将账号标记为已过期"""
-        return ISPAccountOperations.update_account(账号, 状态='已过期')
+        return ISPAccountOperations.update_account(
+            账号,
+            状态='已过期',
+            log_context={'操作来源': '系统维护'}
+        )
 
 
 class PaymentOperations:
@@ -329,17 +670,44 @@ class SystemSettingsOperations:
         return results[0]['配置值'] if results else None
 
     @staticmethod
-    def set_setting(配置项: str, 配置值: str) -> bool:
+    def set_setting(配置项: str, 配置值: str, 操作人: str = '系统自动') -> bool:
         """设置系统配置"""
+        old_value = SystemSettingsOperations.get_setting(配置项)
         try:
             query = '''
                 INSERT OR REPLACE INTO system_settings (配置项, 配置值, 更新时间)
                 VALUES (?, ?, datetime('now', 'localtime'))
             '''
             db_manager.execute_update(query, (配置项, 配置值))
+
+            if old_value != 配置值:
+                OperationLogOperations.log_operation(
+                    操作类型='系统设置修改',
+                    操作人=操作人,
+                    操作详情={
+                        '配置项': 配置项,
+                        '旧值': old_value,
+                        '新值': 配置值
+                    },
+                    影响记录数=1,
+                    执行状态='成功'
+                )
+
             return True
         except Exception as e:
             print(f"设置系统配置失败: {e}")
+            OperationLogOperations.log_operation(
+                操作类型='系统设置修改',
+                操作人=操作人,
+                操作详情={
+                    '配置项': 配置项,
+                    '旧值': old_value,
+                    '新值': 配置值
+                },
+                影响记录数=0,
+                执行状态='失败',
+                备注=str(e)
+            )
             return False
 
     @staticmethod
@@ -474,22 +842,27 @@ class MaintenanceOperations:
     def auto_release_expired_bindings() -> int:
         """自动释放套餐到期的账号绑定"""
         selection_query = '''
-            SELECT 账号, 绑定的学号
+            SELECT 账号, 绑定的学号, 绑定的套餐到期日, 状态
             FROM isp_accounts
             WHERE 状态 = '已使用'
               AND 绑定的套餐到期日 < date('now', 'localtime')
               AND (生命周期结束日期 IS NULL OR 生命周期结束日期 > date('now', 'localtime'))
         '''
 
+        release_targets: List[Dict[str, Any]] = []
+        released_count = 0
+
         with db_manager.get_connection(enable_performance_mode=True) as conn:
             cursor = conn.cursor()
             cursor.execute(selection_query)
             rows = cursor.fetchall()
-
             if not rows:
+                conn.commit()
                 return 0
 
-            account_ids = [row['账号'] for row in rows]
+            release_targets = [dict(row) for row in rows]
+
+            account_ids = [row['账号'] for row in release_targets]
 
             placeholders = ','.join(['?'] * len(account_ids))
             update_query = f'''
@@ -506,8 +879,8 @@ class MaintenanceOperations:
             # 同步用户列表，移除已释放账号的移动账号字段
             sync_params = [
                 (row['绑定的学号'], row['账号'])
-                for row in rows
-                if row['绑定的学号']
+                for row in release_targets
+                if row.get('绑定的学号')
             ]
 
             if sync_params:
@@ -523,33 +896,147 @@ class MaintenanceOperations:
                 )
 
             conn.commit()
+
+        if released_count > 0:
+            operation_id = OperationLogOperations.log_operation(
+                操作类型='自动释放账号',
+                操作详情={
+                    '处理原因': '套餐到期自动释放',
+                    '账号数量': released_count
+                },
+                影响记录数=released_count,
+                执行状态='成功',
+                操作人='系统自动'
+            )
+
+            for item in release_targets:
+                AccountChangeLogOperations.log_multiple_changes(
+                    账号=item['账号'],
+                    changes=[
+                        {
+                            '变更类型': '解绑',
+                            '变更字段': '状态',
+                            '旧值': item.get('状态'),
+                            '新值': '未使用'
+                        },
+                        {
+                            '变更类型': '解绑',
+                            '变更字段': '绑定的学号',
+                            '旧值': item.get('绑定的学号'),
+                            '新值': None
+                        },
+                        {
+                            '变更类型': '解绑',
+                            '变更字段': '绑定的套餐到期日',
+                            '旧值': item.get('绑定的套餐到期日'),
+                            '新值': None
+                        }
+                    ],
+                    关联学号=item.get('绑定的学号'),
+                    操作来源='系统维护',
+                    操作批次ID=operation_id,
+                    备注='套餐到期自动释放'
+                )
+
             return released_count
 
     @staticmethod
     def auto_expire_lifecycle_ended() -> int:
         """自动将生命周期结束的账号标记为已过期（区分是否仍被绑定）"""
-        # 情况1：生命周期过期且套餐也过期（或没有绑定）-> 标记为「已过期」
-        query_expired = '''
-            UPDATE isp_accounts
-            SET 状态 = '已过期', 更新时间 = datetime('now', 'localtime')
+        selection_expired = '''
+            SELECT 账号, 状态, 绑定的学号, 绑定的套餐到期日
+            FROM isp_accounts
             WHERE 生命周期结束日期 < date('now', 'localtime')
-            AND 状态 NOT IN ('已过期', '已过期但被绑定')
-            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now', 'localtime'))
+              AND 状态 NOT IN ('已过期', '已过期但被绑定')
+              AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now', 'localtime'))
         '''
-        count1 = db_manager.execute_update(query_expired)
 
-        # 情况2：生命周期过期但套餐还没过期 -> 标记为「已过期但被绑定」
-        query_expired_but_bound = '''
-            UPDATE isp_accounts
-            SET 状态 = '已过期但被绑定', 更新时间 = datetime('now', 'localtime')
+        selection_expired_but_bound = '''
+            SELECT 账号, 状态, 绑定的学号, 绑定的套餐到期日
+            FROM isp_accounts
             WHERE 生命周期结束日期 < date('now', 'localtime')
-            AND 状态 NOT IN ('已过期', '已过期但被绑定')
-            AND 绑定的套餐到期日 IS NOT NULL
-            AND 绑定的套餐到期日 >= date('now', 'localtime')
+              AND 状态 NOT IN ('已过期', '已过期但被绑定')
+              AND 绑定的套餐到期日 IS NOT NULL
+              AND 绑定的套餐到期日 >= date('now', 'localtime')
         '''
-        count2 = db_manager.execute_update(query_expired_but_bound)
 
-        return count1 + count2
+        expired_accounts: List[Dict[str, Any]] = []
+        expired_but_bound_accounts: List[Dict[str, Any]] = []
+
+        with db_manager.get_connection(enable_performance_mode=True) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(selection_expired)
+            rows_expired = cursor.fetchall()
+            if rows_expired:
+                expired_accounts = [dict(row) for row in rows_expired]
+                placeholders = ','.join(['?'] * len(expired_accounts))
+                cursor.execute(
+                    f'''
+                    UPDATE isp_accounts
+                    SET 状态 = '已过期', 更新时间 = datetime('now', 'localtime')
+                    WHERE 账号 IN ({placeholders})
+                    ''',
+                    tuple(item['账号'] for item in expired_accounts)
+                )
+
+            cursor.execute(selection_expired_but_bound)
+            rows_expired_but_bound = cursor.fetchall()
+            if rows_expired_but_bound:
+                expired_but_bound_accounts = [dict(row) for row in rows_expired_but_bound]
+                placeholders = ','.join(['?'] * len(expired_but_bound_accounts))
+                cursor.execute(
+                    f'''
+                    UPDATE isp_accounts
+                    SET 状态 = '已过期但被绑定', 更新时间 = datetime('now', 'localtime')
+                    WHERE 账号 IN ({placeholders})
+                    ''',
+                    tuple(item['账号'] for item in expired_but_bound_accounts)
+                )
+
+            conn.commit()
+
+        total_updated = len(expired_accounts) + len(expired_but_bound_accounts)
+
+        if total_updated > 0:
+            operation_id = OperationLogOperations.log_operation(
+                操作类型='自动更新生命周期状态',
+                操作详情={
+                    '标记为已过期': len(expired_accounts),
+                    '标记为已过期但被绑定': len(expired_but_bound_accounts)
+                },
+                影响记录数=total_updated,
+                执行状态='成功',
+                操作人='系统自动'
+            )
+
+            for item in expired_accounts:
+                AccountChangeLogOperations.log_account_change(
+                    账号=item['账号'],
+                    变更类型='状态变更',
+                    变更字段='状态',
+                    旧值=item.get('状态'),
+                    新值='已过期',
+                    关联学号=item.get('绑定的学号'),
+                    操作来源='系统维护',
+                    操作批次ID=operation_id,
+                    备注='生命周期已结束'
+                )
+
+            for item in expired_but_bound_accounts:
+                AccountChangeLogOperations.log_account_change(
+                    账号=item['账号'],
+                    变更类型='状态变更',
+                    变更字段='状态',
+                    旧值=item.get('状态'),
+                    新值='已过期但被绑定',
+                    关联学号=item.get('绑定的学号'),
+                    操作来源='系统维护',
+                    操作批次ID=operation_id,
+                    备注='生命周期已结束但仍绑定'
+                )
+
+        return total_updated
 
     @staticmethod
     def auto_mark_expired_subscriptions() -> int:
@@ -567,13 +1054,60 @@ class MaintenanceOperations:
     @staticmethod
     def auto_convert_expired_but_bound_to_expired() -> int:
         """自动将「已过期但被绑定」且套餐也过期的账号转换为「已过期」"""
-        query = '''
-            UPDATE isp_accounts
-            SET 状态 = '已过期', 更新时间 = datetime('now', 'localtime')
+        selection_query = '''
+            SELECT 账号, 状态, 绑定的学号, 绑定的套餐到期日
+            FROM isp_accounts
             WHERE 状态 = '已过期但被绑定'
-            AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now', 'localtime'))
+              AND (绑定的套餐到期日 IS NULL OR 绑定的套餐到期日 < date('now', 'localtime'))
         '''
-        return db_manager.execute_update(query)
+
+        targets: List[Dict[str, Any]] = []
+
+        with db_manager.get_connection(enable_performance_mode=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute(selection_query)
+            rows = cursor.fetchall()
+            if not rows:
+                conn.commit()
+                return 0
+
+            targets = [dict(row) for row in rows]
+            placeholders = ','.join(['?'] * len(targets))
+            cursor.execute(
+                f'''
+                UPDATE isp_accounts
+                SET 状态 = '已过期', 更新时间 = datetime('now', 'localtime')
+                WHERE 账号 IN ({placeholders})
+                ''',
+                tuple(item['账号'] for item in targets)
+            )
+            conn.commit()
+
+        updated = len(targets)
+
+        if updated > 0:
+            operation_id = OperationLogOperations.log_operation(
+                操作类型='自动恢复过期状态',
+                操作详情={'账号数量': updated},
+                影响记录数=updated,
+                执行状态='成功',
+                操作人='系统自动'
+            )
+
+            for item in targets:
+                AccountChangeLogOperations.log_account_change(
+                    账号=item['账号'],
+                    变更类型='状态变更',
+                    变更字段='状态',
+                    旧值=item.get('状态'),
+                    新值='已过期',
+                    关联学号=item.get('绑定的学号'),
+                    操作来源='系统维护',
+                    操作批次ID=operation_id,
+                    备注='套餐与生命周期均已到期'
+                )
+
+        return updated
 
     @staticmethod
     def auto_fix_duplicate_mobile_bindings() -> Tuple[int, int, int]:
@@ -589,7 +1123,6 @@ class MaintenanceOperations:
 
         with db_manager.get_connection(enable_performance_mode=True) as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION")
             
             try:
                 cursor.execute(duplicate_query)
@@ -801,7 +1334,6 @@ class MaintenanceOperations:
         """
         with db_manager.get_connection(enable_performance_mode=True) as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION")
 
             try:
                 cursor.execute(
@@ -817,7 +1349,7 @@ class MaintenanceOperations:
                 user_entry = cursor.fetchone()
 
                 if not user_entry:
-                    cursor.execute("ROLLBACK")
+                    conn.rollback()
                     return False, "未找到匹配的重复绑定记录", None
 
                 cursor.execute(
@@ -837,7 +1369,7 @@ class MaintenanceOperations:
                 new_account_row = cursor.fetchone()
 
                 if not new_account_row:
-                    cursor.execute("ROLLBACK")
+                    conn.rollback()
                     return False, "没有可用的未使用账号", None
 
                 new_account = new_account_row['账号']
@@ -901,11 +1433,11 @@ class MaintenanceOperations:
                         (移动账号,)
                     )
 
-                cursor.execute("COMMIT")
+                conn.commit()
                 return True, f"学号 {用户账号} 已换绑到账号 {new_account}", new_account
 
             except Exception as e:
-                cursor.execute("ROLLBACK")
+                conn.rollback()
                 return False, f"换绑失败: {e}", None
 
     @staticmethod
@@ -947,7 +1479,6 @@ class MaintenanceOperations:
         
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION")
             
             try:
                 # 1. 修复孤立绑定 - 释放账号表中已绑定但用户表中没有记录的账号

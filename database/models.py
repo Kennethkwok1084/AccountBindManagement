@@ -27,6 +27,9 @@ class DatabaseManager:
     def _init_database(self):
         """初始化数据库表结构"""
         with sqlite3.connect(self.db_path) as conn:
+            # 启用WAL模式,提高并发性能和数据安全
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=FULL")
             cursor = conn.cursor()
 
             # 创建上网账号表
@@ -95,6 +98,38 @@ class DatabaseManager:
                 )
             ''')
 
+            # 创建操作日志表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS operation_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    操作时间 TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                    操作类型 TEXT,
+                    操作人 TEXT,
+                    操作详情 TEXT,
+                    影响记录数 INTEGER,
+                    执行状态 TEXT,
+                    备注 TEXT
+                )
+            ''')
+
+            # 创建账号变更日志表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS account_change_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    变更时间 TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                    账号 TEXT NOT NULL,
+                    变更类型 TEXT,
+                    变更字段 TEXT,
+                    旧值 TEXT,
+                    新值 TEXT,
+                    关联学号 TEXT,
+                    操作来源 TEXT,
+                    操作批次ID INTEGER,
+                    备注 TEXT,
+                    FOREIGN KEY (操作批次ID) REFERENCES operation_logs(id)
+                )
+            ''')
+
             # 插入默认系统设置
             default_settings = [
                 ('上次缴费导入时间', '1970-01-01 00:00:00', '最后一次导入缴费记录的时间'),
@@ -120,6 +155,11 @@ class DatabaseManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_list_telecom ON user_list(电信账号)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_list_category ON user_list(用户类别)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_list_package ON user_list(绑定套餐)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_operation_logs_time ON operation_logs(操作时间)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_operation_logs_type ON operation_logs(操作类型)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_account_change_logs_account ON account_change_logs(账号)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_account_change_logs_time ON account_change_logs(变更时间)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_account_change_logs_student ON account_change_logs(关联学号)')
 
             conn.commit()
             print(f"数据库初始化完成: {self.db_path}")
@@ -139,12 +179,11 @@ class DatabaseManager:
         """应用SQLite性能优化设置"""
         cursor = conn.cursor()
 
-        # 提升写入性能的设置
-        cursor.execute("PRAGMA synchronous = NORMAL")      # 减少磁盘同步频率
-        cursor.execute("PRAGMA journal_mode = WAL")        # 启用WAL模式
+        # 安全的性能优化设置
+        cursor.execute("PRAGMA synchronous = FULL")        # 完全同步,防止数据损坏
         cursor.execute("PRAGMA cache_size = 10000")        # 增大缓存到10MB
         cursor.execute("PRAGMA temp_store = memory")       # 临时表存储在内存
-        cursor.execute("PRAGMA mmap_size = 268435456")     # 启用内存映射(256MB)
+        cursor.execute("PRAGMA busy_timeout = 5000")       # 设置5秒锁等待超时
 
         cursor.close()
 
@@ -180,10 +219,8 @@ class DatabaseManager:
         with self.get_connection(enable_performance_mode=True) as conn:
             cursor = conn.cursor()
 
-            # 开始事务
-            cursor.execute("BEGIN TRANSACTION")
-
             try:
+                # with语句会自动管理事务,不需要手动BEGIN/COMMIT
                 for operation_type, query, params in operations:
                     if operation_type == 'many':
                         cursor.executemany(query, params)
@@ -192,13 +229,11 @@ class DatabaseManager:
 
                     total_affected += cursor.rowcount
 
-                # 提交事务
-                cursor.execute("COMMIT")
+                conn.commit()  # 显式提交
                 return total_affected
 
             except Exception as e:
-                # 回滚事务
-                cursor.execute("ROLLBACK")
+                conn.rollback()  # 出错时回滚
                 raise e
 
     def bulk_upsert_accounts(self, accounts_data: List[tuple]) -> int:
@@ -216,16 +251,15 @@ class DatabaseManager:
 
         with self.get_connection(enable_performance_mode=True) as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION")
 
             try:
                 cursor.executemany(upsert_query, accounts_data)
                 affected_rows = cursor.rowcount
-                cursor.execute("COMMIT")
+                conn.commit()
                 return affected_rows
 
             except Exception as e:
-                cursor.execute("ROLLBACK")
+                conn.rollback()
                 raise e
 
 

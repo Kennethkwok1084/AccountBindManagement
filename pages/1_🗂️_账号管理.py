@@ -25,7 +25,7 @@ from ui_components import (
     apply_global_style, render_page_header, render_stats_row,
     render_search_filters, render_dataframe_with_style,
     show_success_message, show_error_message, render_section_divider,
-    render_empty_state, render_info_card
+    render_empty_state, render_info_card, ProgressTracker
 )
 
 st.set_page_config(
@@ -60,22 +60,60 @@ with col1:
 
     if uploaded_file is not None:
         if st.button("📤 导入账号", type="primary", width='stretch'):
-            with st.spinner("正在处理账号数据..."):
-                result = account_manager.import_accounts_from_excel(uploaded_file)
-
+            # 创建进度追踪器容器
+            progress_container = st.container()
+            
+            with progress_container:
+                # 创建进度追踪器 - 使用百分比模式
+                tracker = ProgressTracker(
+                    total=100,  # 使用百分比
+                    title="账号导入处理",
+                    show_eta=True
+                )
+                
+                # 定义进度回调函数
+                def update_progress(info):
+                    tracker.update(
+                        current=info.get('current', 0),
+                        message=info.get('message', ''),
+                        success_count=info.get('success', 0),
+                        failed_count=info.get('failed', 0),
+                        step=info.get('step', '')
+                    )
+                
+                # 执行账号导入并传递进度回调
+                result = account_manager.import_accounts_from_excel(
+                    uploaded_file,
+                    progress_callback=update_progress
+                )
+                
+                # 标记完成
                 if result['success']:
-                    show_success_message(result['message'])
-
-                    if result['errors']:
-                        with st.expander("⚠️ 查看导入错误详情"):
-                            for error in result['errors']:
-                                show_error_message(error)
-                    st.rerun()
+                    tracker.complete(
+                        success_count=result['processed_count'],
+                        failed_count=result['error_count'],
+                        message=result['message']
+                    )
                 else:
-                    show_error_message(result['message'])
-                    if result['errors']:
-                        for error in result['errors'][:5]:  # 只显示前5个错误
+                    tracker.error(result['message'])
+            
+            # 显示结果
+            if result['success']:
+                show_success_message(result['message'])
+
+                if result['errors']:
+                    with st.expander("⚠️ 查看导入错误详情"):
+                        for error in result['errors']:
                             show_error_message(error)
+                
+                # 刷新按钮
+                if st.button("🔄 刷新页面查看最新数据", type="primary"):
+                    st.rerun()
+            else:
+                show_error_message(result['message'])
+                if result['errors']:
+                    for error in result['errors'][:5]:  # 只显示前5个错误
+                        show_error_message(error)
 
 with col2:
     render_info_card(

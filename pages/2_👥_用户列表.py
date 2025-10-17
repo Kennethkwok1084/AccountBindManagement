@@ -6,26 +6,34 @@ User List Page - Actual Binding Relationship Management & Data Calibration
 """
 
 import os
+from datetime import datetime
 
 # 使用轮询监视器避免 inotify 限制带来的崩溃
 os.environ.setdefault("STREAMLIT_WATCHDOG_TYPE", "polling")
 
 import streamlit as st
 import pandas as pd
+import json
 import sys
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.operations import ISPAccountOperations, SystemSettingsOperations
+from database.operations import (
+    ISPAccountOperations,
+    SystemSettingsOperations,
+    OperationLogOperations,
+    AccountChangeLogOperations
+)
 from database.models import db_manager
 from utils.excel_handler import export_processor
 from ui_components import (
     apply_global_style, render_page_header, render_stats_row,
     render_dataframe_with_style, show_success_message, show_error_message,
     render_section_divider, render_empty_state, render_info_card,
-    render_action_card
+    render_action_card, ProgressTracker
 )
+from typing import Dict, Any
 
 st.set_page_config(
     page_title="用户列表 - 校园网账号管理系统",
@@ -53,6 +61,14 @@ def process_user_list_import(file_buffer):
         'error_count': 0,
         'errors': []
     }
+
+    file_name = getattr(file_buffer, 'name', None)
+    operation_id = OperationLogOperations.log_operation(
+        操作类型='用户列表导入',
+        操作人='系统自动',
+        操作详情={'文件名': file_name} if file_name else None,
+        执行状态='进行中'
+    )
 
     try:
         # 读取Excel文件
@@ -144,6 +160,24 @@ def process_user_list_import(file_buffer):
     except Exception as e:
         result['message'] = f"文件处理失败: {e}"
 
+    finally:
+        if operation_id:
+            detail_payload = {
+                '文件名': file_name,
+                '成功数': result['processed_count'],
+                '失败数': result['error_count']
+            }
+            if result['errors']:
+                detail_payload['错误示例'] = result['errors'][:5]
+
+            OperationLogOperations.update_operation_log(
+                operation_id,
+                操作详情=detail_payload,
+                影响记录数=result['processed_count'],
+                执行状态='成功' if result['success'] else '失败',
+                备注=None if result['success'] else result['message']
+            )
+
     return result
 
 def sync_bindings_from_user_list():
@@ -156,13 +190,59 @@ def sync_bindings_from_user_list():
         'error_count': 0
     }
 
+    operation_id = OperationLogOperations.log_operation(
+        操作类型='用户列表数据校准',
+        操作人='系统自动',
+        操作详情={'状态': '开始执行'},
+        执行状态='进行中'
+    )
+
+    user_bindings: Dict[str, Dict[str, Any]] = {}
+    existing_accounts: Dict[str, Dict[str, Any]] = {}
+
     try:
         # 使用批量 SQL 操作，避免逐条查询
         with db_manager.get_connection(enable_performance_mode=True) as conn:
             cursor = conn.cursor()
-            cursor.execute("BEGIN TRANSACTION")
 
             try:
+                cursor.execute('''
+                    SELECT 用户账号, 移动账号, 到期日期
+                    FROM user_list
+                    WHERE 移动账号 IS NOT NULL
+                      AND TRIM(移动账号) != ''
+                ''')
+                rows = cursor.fetchall()
+
+                if not rows:
+                    conn.commit()
+                    result['message'] = "无需更新"
+                    result['success'] = True
+                    return result
+
+                user_bindings = {
+                    row['移动账号']: {
+                        '用户账号': row['用户账号'],
+                        '到期日期': row['到期日期']
+                    } for row in rows if row['移动账号']
+                }
+
+                mobile_accounts = list(user_bindings.keys())
+
+                placeholders = ','.join(['?'] * len(mobile_accounts))
+                cursor.execute(
+                    f'''
+                    SELECT 账号, 状态, 绑定的学号, 绑定的套餐到期日
+                    FROM isp_accounts
+                    WHERE 账号 IN ({placeholders})
+                    ''',
+                    tuple(mobile_accounts)
+                )
+                existing_rows = cursor.fetchall()
+                existing_accounts = {
+                    row['账号']: dict(row) for row in existing_rows
+                }
+
                 # 1. 批量更新已存在的账号（使用 JOIN）
                 update_query = '''
                     UPDATE isp_accounts
@@ -194,12 +274,84 @@ def sync_bindings_from_user_list():
                 cursor.execute(create_query)
                 result['created_count'] = cursor.rowcount
 
-                cursor.execute("COMMIT")
+                conn.commit()
                 result['success'] = True
 
             except Exception as e:
-                cursor.execute("ROLLBACK")
+                conn.rollback()
                 raise e
+
+        all_accounts = list(user_bindings.keys()) if user_bindings else []
+        if all_accounts:
+            placeholders = ','.join(['?'] * len(all_accounts))
+            latest_rows = db_manager.execute_query(
+                f'''
+                SELECT 账号, 账号类型, 状态, 绑定的学号, 绑定的套餐到期日
+                FROM isp_accounts
+                WHERE 账号 IN ({placeholders})
+                ''',
+                tuple(all_accounts)
+            )
+            latest_map = {row['账号']: row for row in latest_rows}
+
+            for account_id in all_accounts:
+                new_state = latest_map.get(account_id)
+                if not new_state:
+                    continue
+
+                binding_info = user_bindings.get(account_id, {})
+                old_state = existing_accounts.get(account_id)
+                if old_state:
+                    changes = []
+                    if old_state.get('状态') != new_state.get('状态'):
+                        changes.append({
+                            '变更类型': '状态变更',
+                            '变更字段': '状态',
+                            '旧值': old_state.get('状态'),
+                            '新值': new_state.get('状态')
+                        })
+                    if old_state.get('绑定的学号') != new_state.get('绑定的学号'):
+                        changes.append({
+                            '变更类型': '数据校准',
+                            '变更字段': '绑定的学号',
+                            '旧值': old_state.get('绑定的学号'),
+                            '新值': new_state.get('绑定的学号')
+                        })
+                    if old_state.get('绑定的套餐到期日') != new_state.get('绑定的套餐到期日'):
+                        changes.append({
+                            '变更类型': '数据校准',
+                            '变更字段': '绑定的套餐到期日',
+                            '旧值': old_state.get('绑定的套餐到期日'),
+                            '新值': new_state.get('绑定的套餐到期日')
+                        })
+
+                    if changes:
+                        AccountChangeLogOperations.log_multiple_changes(
+                            账号=account_id,
+                            changes=changes,
+                            关联学号=new_state.get('绑定的学号'),
+                            操作来源='用户列表数据校准',
+                            操作批次ID=operation_id,
+                            备注='用户列表同步更新账号信息'
+                        )
+                else:
+                    snapshot = {
+                        '账号类型': new_state.get('账号类型'),
+                        '状态': new_state.get('状态'),
+                        '绑定的学号': new_state.get('绑定的学号'),
+                        '绑定的套餐到期日': new_state.get('绑定的套餐到期日')
+                    }
+                    AccountChangeLogOperations.log_account_change(
+                        账号=account_id,
+                        变更类型='创建',
+                        变更字段='全部',
+                        旧值=None,
+                        新值=json.dumps(snapshot, ensure_ascii=False),
+                        关联学号=new_state.get('绑定的学号'),
+                        操作来源='用户列表数据校准',
+                        操作批次ID=operation_id,
+                        备注='用户列表同步创建缺失账号'
+                    )
 
         message_parts = []
         if result['updated_count'] > 0:
@@ -212,6 +364,20 @@ def sync_bindings_from_user_list():
     except Exception as e:
         result['message'] = f"同步失败: {e}"
         result['success'] = False
+
+    finally:
+        if operation_id:
+            OperationLogOperations.update_operation_log(
+                operation_id,
+                操作详情={
+                    '更新账号数': result['updated_count'],
+                    '新建账号数': result['created_count'],
+                    '错误数': result['error_count'],
+                    '消息': result['message']
+                },
+                影响记录数=result['updated_count'] + result['created_count'],
+                执行状态='成功' if result['success'] else '失败'
+            )
 
     return result
 
@@ -306,7 +472,13 @@ with col1:
 with col2:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 执行数据校准", type="primary", width='stretch', key="sync_btn"):
-        with st.spinner("正在同步绑定关系..."):
+        # 创建进度追踪器容器
+        progress_container = st.container()
+        
+        with progress_container:
+            # 使用简单的进度显示（因为是批量SQL操作）
+            st.info("🔄 正在同步绑定关系...")
+            
             result = sync_bindings_from_user_list()
 
             if result['success']:
