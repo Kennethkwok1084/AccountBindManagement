@@ -33,7 +33,7 @@ from ui_components import (
     render_section_divider, render_empty_state, render_info_card,
     render_action_card, ProgressTracker
 )
-from typing import Dict, Any
+from typing import Dict, Any, Callable, Optional
 
 st.set_page_config(
     page_title="用户列表 - 校园网账号管理系统",
@@ -52,7 +52,10 @@ render_page_header(
 )
 
 # 用户列表操作函数
-def process_user_list_import(file_buffer):
+def process_user_list_import(
+    file_buffer,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+):
     """处理用户列表导入"""
     result = {
         'success': False,
@@ -71,6 +74,16 @@ def process_user_list_import(file_buffer):
     )
 
     try:
+        if progress_callback:
+            progress_callback({
+                'current': 0,
+                'total': 100,
+                'success': 0,
+                'failed': 0,
+                'message': '正在解析Excel文件...',
+                'step': '文件解析'
+            })
+
         # 读取Excel文件
         df = pd.read_excel(file_buffer)
         df.columns = df.columns.str.strip()
@@ -93,7 +106,40 @@ def process_user_list_import(file_buffer):
         if missing_columns:
             result['message'] = f"缺少必需列: {', '.join(missing_columns)}"
             result['errors'].append(f"当前列名: {list(df.columns)}")
+            if progress_callback:
+                progress_callback({
+                    'current': 0,
+                    'total': 100,
+                    'success': 0,
+                    'failed': 0,
+                    'message': result['message'],
+                    'step': '校验失败'
+                })
             return result
+
+        total_records = len(df)
+        if total_records == 0:
+            result['message'] = "文件中没有可导入的用户记录"
+            if progress_callback:
+                progress_callback({
+                    'current': 100,
+                    'total': 100,
+                    'success': 0,
+                    'failed': 0,
+                    'message': result['message'],
+                    'step': '完成'
+                })
+            return result
+
+        if progress_callback:
+            progress_callback({
+                'current': 10,
+                'total': 100,
+                'success': 0,
+                'failed': 0,
+                'message': f'已读取 {total_records} 条用户记录，开始校验数据...',
+                'step': '数据校验'
+            })
 
         # 处理数据
         for index, row in df.iterrows():
@@ -143,11 +189,33 @@ def process_user_list_import(file_buffer):
                 result['errors'].append(f"第{index+2}行处理错误: {e}")
                 result['error_count'] += 1
 
+            processed_rows = result['processed_count'] + result['error_count']
+            if progress_callback and (processed_rows % 10 == 0 or processed_rows == total_records):
+                progress_percent = 10 + int((processed_rows / total_records) * 70)
+                progress_callback({
+                    'current': min(progress_percent, 85),
+                    'total': 100,
+                    'success': result['processed_count'],
+                    'failed': result['error_count'],
+                    'message': f'正在处理第 {processed_rows} / {total_records} 条用户记录',
+                    'step': '写入数据库'
+                })
+
         result['success'] = result['processed_count'] > 0
         result['message'] = f"成功处理 {result['processed_count']} 条用户记录"
 
         if result['error_count'] > 0:
             result['message'] += f"，{result['error_count']} 条失败"
+
+        if progress_callback:
+            progress_callback({
+                'current': 90,
+                'total': 100,
+                'success': result['processed_count'],
+                'failed': result['error_count'],
+                'message': '正在更新导入时间...',
+                'step': '收尾处理'
+            })
 
         # 更新导入时间
         if result['success']:
@@ -156,9 +224,27 @@ def process_user_list_import(file_buffer):
                 '上次用户列表导入时间',
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             )
+            if progress_callback:
+                progress_callback({
+                    'current': 95,
+                    'total': 100,
+                    'success': result['processed_count'],
+                    'failed': result['error_count'],
+                    'message': result['message'],
+                    'step': '完成'
+                })
 
     except Exception as e:
         result['message'] = f"文件处理失败: {e}"
+        if progress_callback:
+            progress_callback({
+                'current': 0,
+                'total': 100,
+                'success': 0,
+                'failed': 0,
+                'message': result['message'],
+                'step': '错误'
+            })
 
     finally:
         if operation_id:
@@ -397,19 +483,48 @@ with col1:
 
     if uploaded_file is not None:
         if st.button("📤 导入用户列表", type="primary", width='stretch'):
-            with st.spinner("正在处理用户列表数据..."):
-                result = process_user_list_import(uploaded_file)
+            progress_container = st.container()
+
+            with progress_container:
+                tracker = ProgressTracker(
+                    total=100,
+                    title="用户列表导入处理",
+                    show_eta=True
+                )
+
+                def update_progress(info):
+                    tracker.update(
+                        current=info.get('current', 0),
+                        message=info.get('message', ''),
+                        success_count=info.get('success', 0),
+                        failed_count=info.get('failed', 0),
+                        step=info.get('step', '')
+                    )
+
+                result = process_user_list_import(
+                    uploaded_file,
+                    progress_callback=update_progress
+                )
 
                 if result['success']:
-                    show_success_message(result['message'])
-
-                    if result['errors']:
-                        with st.expander("⚠️ 查看导入错误详情"):
-                            for error in result['errors']:
-                                show_error_message(error)
-                    st.rerun()
+                    tracker.complete(
+                        success_count=result['processed_count'],
+                        failed_count=result['error_count'],
+                        message=result['message']
+                    )
                 else:
-                    show_error_message(result['message'])
+                    tracker.error(result['message'])
+
+            if result['success']:
+                show_success_message(result['message'])
+
+                if result['errors']:
+                    with st.expander("⚠️ 查看导入错误详情"):
+                        for error in result['errors']:
+                            show_error_message(error)
+                st.rerun()
+            else:
+                show_error_message(result['message'])
 
 with col2:
     render_info_card(

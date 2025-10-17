@@ -254,7 +254,7 @@ export_files = []
 
 if os.path.exists(data_dir):
     for file in os.listdir(data_dir):
-        if file.startswith("绑定导出_") and file.endswith(".xlsx"):
+        if file.startswith("绑定导") and file.endswith(".xlsx"):
             file_path = os.path.join(data_dir, file)
             file_stat = os.stat(file_path)
             export_files.append({

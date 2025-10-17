@@ -1066,7 +1066,7 @@ class PaymentProcessor:
                     })
                 
                 try:
-                    export_filename = f'绑定导��_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+                    export_filename = f'绑定导出_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
                     logger.info(f"开始生成导出文件: {export_filename}")
                     export_path = export_processor.create_binding_export_file(
                         binding_pairs, export_filename
